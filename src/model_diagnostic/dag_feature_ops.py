@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 import torch
@@ -11,31 +12,19 @@ from model_diagnostic.dag.operation_registry import OperationRegistry
 FEATURE_DAG_REGISTRY = OperationRegistry()
 
 
-def _require_cfg(runtime: dict[str, Any]):
-    cfg = runtime.get("cfg")
-    if cfg is None:
-        raise ValueError("Feature DAG operation requires runtime['cfg']")
-    return cfg
-
-
 @FEATURE_DAG_REGISTRY.register("extract_sequence_fields")
 def extract_sequence_fields(
     inputs: dict[str, Any],
     params: dict[str, Any],
     runtime: dict[str, Any],
 ) -> dict[str, dict[str, torch.Tensor]]:
-    """Move selected sequence fields to the configured device and reshape them.
+    """Move configured sequence fields to the target device and reshape them."""
+    fields = inputs.get("fields")
 
-    The field selection/order comes directly from the node's top-level YAML
-    ``inputs`` list. DagProcessor converts that list into an insertion-ordered
-    ``{field_name: tensor}`` mapping before invoking this operation.
-
-    ``cfg_params: {device: device}`` is resolved by DagProcessor, so this op
-    receives the actual device value as ``params['device']`` and does not need
-    to know how runtime cfg lookup works.
-    """
-    if not inputs:
-        raise ValueError("extract_sequence_fields requires at least one input field")
+    if not isinstance(fields, dict) or not fields:
+        raise ValueError(
+            "extract_sequence_fields requires non-empty 'fields' mapping"
+        )
 
     if "device" not in params:
         raise ValueError(
@@ -43,9 +32,11 @@ def extract_sequence_fields(
         )
     device = params["device"]
 
-    shape_tensor = next(iter(inputs.values()))
+    shape_tensor = next(iter(fields.values()))
     if not isinstance(shape_tensor, torch.Tensor):
-        raise TypeError("extract_sequence_fields inputs must be torch.Tensor values")
+        raise TypeError(
+            "extract_sequence_fields fields must contain torch.Tensor values"
+        )
     if shape_tensor.ndim < 2:
         raise ValueError(
             "First configured sequence field must have at least 2 dimensions; "
@@ -54,7 +45,7 @@ def extract_sequence_fields(
     batch_size, seq_len = shape_tensor.shape[:2]
 
     raw: dict[str, torch.Tensor] = {}
-    for field_name, source in inputs.items():
+    for field_name, source in fields.items():
         if not isinstance(source, torch.Tensor):
             raise TypeError(
                 f"Configured field '{field_name}' must be a torch.Tensor; "
@@ -90,33 +81,9 @@ def dt_to_pre(
     params: dict[str, Any],
     runtime: dict[str, Any],
 ) -> torch.Tensor:
+    # ``inputs`` is the transform DAG's original raw input mapping because this
+    # node omits an explicit YAML inputs declaration.
     return feature_util.dt_to_pre(inputs["dt"])
-
-
-@FEATURE_DAG_REGISTRY.register("amt_norm")
-def amt_norm(
-    inputs: dict[str, Any],
-    params: dict[str, Any],
-    runtime: dict[str, Any],
-) -> torch.Tensor:
-    cfg = _require_cfg(runtime)
-    mean_key = params.get("mean_config_key", "amt_mean")
-    deviation_key = params.get("deviation_config_key", "amt_dv")
-    clip_key = params.get("clip_config_key", "amt_clip_val")
-
-    for key in (mean_key, deviation_key, clip_key):
-        if not hasattr(cfg, key):
-            raise AttributeError(f"Config does not define required attribute '{key}'")
-
-    if (mean_key, deviation_key, clip_key) == ("amt_mean", "amt_dv", "amt_clip_val"):
-        return feature_util.amt_norm(inputs["amount"], cfg)
-
-    proxy = type("AmtNormConfig", (), {
-        "amt_mean": getattr(cfg, mean_key),
-        "amt_dv": getattr(cfg, deviation_key),
-        "amt_clip_val": getattr(cfg, clip_key),
-    })()
-    return feature_util.amt_norm(inputs["amount"], proxy)
 
 
 @FEATURE_DAG_REGISTRY.register("amt_to_pre")
@@ -125,7 +92,33 @@ def amt_to_pre(
     params: dict[str, Any],
     runtime: dict[str, Any],
 ) -> torch.Tensor:
+    # ``inputs`` is the transform DAG's original raw input mapping because this
+    # node omits an explicit YAML inputs declaration.
     return feature_util.amt_to_pre(inputs["amount"])
+
+
+@FEATURE_DAG_REGISTRY.register("amt_norm")
+def amt_norm(
+    inputs: dict[str, Any],
+    params: dict[str, Any],
+    runtime: dict[str, Any],
+) -> torch.Tensor:
+    """Normalize amount using values already resolved from cfg_params."""
+    required = ("mean", "deviation", "clip")
+    missing = [name for name in required if name not in params]
+    if missing:
+        raise ValueError(
+            "amt_norm requires cfg_params for: " + ", ".join(missing)
+        )
+
+    # Keep generic_feature_util as the numerical source of truth while avoiding
+    # any runtime-cfg dependency inside the DAG operation itself.
+    cfg_view = SimpleNamespace(
+        amt_mean=params["mean"],
+        amt_dv=params["deviation"],
+        amt_clip_val=params["clip"],
+    )
+    return feature_util.amt_norm(inputs["amount"], cfg_view)
 
 
 @FEATURE_DAG_REGISTRY.register("switch_decay")
@@ -134,16 +127,12 @@ def switch_decay(
     params: dict[str, Any],
     runtime: dict[str, Any],
 ) -> torch.Tensor:
-    cfg = _require_cfg(runtime)
-    tau_key = params.get("tau_config_key", "tau_sw")
-    if not hasattr(cfg, tau_key):
-        raise AttributeError(f"Config does not define required attribute '{tau_key}'")
+    """Compute switch decay using tau already resolved from cfg_params."""
+    if "tau" not in params:
+        raise ValueError("switch_decay requires cfg_params binding for 'tau'")
 
-    if tau_key == "tau_sw":
-        return feature_util.get_decay_factor(cfg, inputs["dt"])
-
-    proxy = type("SwitchDecayConfig", (), {"tau_sw": getattr(cfg, tau_key)})()
-    return feature_util.get_decay_factor(proxy, inputs["dt"])
+    cfg_view = SimpleNamespace(tau_sw=params["tau"])
+    return feature_util.get_decay_factor(cfg_view, inputs["dt"])
 
 
 @FEATURE_DAG_REGISTRY.register("stable_log")
@@ -153,7 +142,7 @@ def stable_log(
     runtime: dict[str, Any],
 ) -> torch.Tensor:
     return feature_util.compute_stable_log(
-        inputs["value"],
+        inputs["field"],
         params.get("base", "log1p"),
     )
 

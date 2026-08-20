@@ -22,24 +22,30 @@ class DagProcessor:
     """Execute declarative DAG configs using a supplied operation registry.
 
     The processor owns graph orchestration only: config validation, dependency
-    ordering, input resolution, cfg-parameter binding, operation dispatch, and
+    ordering, input resolution, parameter binding, operation dispatch, and
     output assembly. Domain-specific behavior belongs in registered operations.
 
-    Node input forms:
-      mapping: aliases are preserved, e.g. ``{field: source_node}``.
-      list: top-level source names are selected from the DAG context and exposed
-            to the operation as an insertion-ordered ``{name: value}`` mapping.
-            Nested lists inside a mapping preserve normal list semantics.
+    Framework contract for node configuration:
+      inputs:
+        DAG data dependencies. Mapping/list structure is preserved while source
+        names are resolved from the DAG context. If the ``inputs`` key is
+        omitted entirely, the operation receives the original external inputs
+        passed to ``run``. An explicit ``inputs: {}`` remains an empty mapping.
 
-    Node parameter forms:
-      params: literal operation parameters.
-      cfg_params: ``operation_param: cfg_attribute`` bindings resolved from
-                  ``runtime['cfg']`` and merged into params before invocation.
+      params:
+        Literal operation parameters written directly in YAML.
+
+      cfg_params:
+        ``operation_param: cfg_attribute`` bindings. Every right-hand value is
+        the name of one attribute on ``runtime['cfg']``. These values are
+        resolved by DagProcessor before the operation is called.
+
+    A parameter name may not appear in both ``params`` and ``cfg_params``.
 
     DAG outputs:
-      If ``outputs`` is configured, it is used exactly as before.
-      If omitted, the final node result is returned directly when it is a
-      mapping; otherwise it is returned as ``{final_node_id: result}``.
+      If ``outputs`` is configured, it is used exactly as declared. If omitted,
+      the final node result is returned directly when it is a mapping; otherwise
+      it is returned as ``{final_node_id: result}``.
     """
 
     def __init__(self, registry: OperationRegistry) -> None:
@@ -110,26 +116,27 @@ class DagProcessor:
                     f"DAG '{dag_id}' node '{node_id}' references unknown op '{op_name}'"
                 ) from exc
 
-            inputs = node.get("inputs", {})
-            if not isinstance(inputs, (dict, list)):
-                raise DagConfigError(
-                    f"DAG '{dag_id}' node '{node_id}' inputs must be a mapping or list"
-                )
-            if isinstance(inputs, list):
-                if not inputs:
+            if "inputs" in node:
+                inputs = node["inputs"]
+                if not isinstance(inputs, (dict, list)):
                     raise DagConfigError(
-                        f"DAG '{dag_id}' node '{node_id}' input list must be non-empty"
+                        f"DAG '{dag_id}' node '{node_id}' inputs must be a mapping or list"
                     )
-                if not all(isinstance(name, str) and name for name in inputs):
-                    raise DagConfigError(
-                        f"DAG '{dag_id}' node '{node_id}' top-level input list must "
-                        "contain non-empty source names"
-                    )
-                if len(set(inputs)) != len(inputs):
-                    raise DagConfigError(
-                        f"DAG '{dag_id}' node '{node_id}' top-level input list "
-                        "contains duplicate source names"
-                    )
+                if isinstance(inputs, list):
+                    if not inputs:
+                        raise DagConfigError(
+                            f"DAG '{dag_id}' node '{node_id}' input list must be non-empty"
+                        )
+                    if not all(isinstance(name, str) and name for name in inputs):
+                        raise DagConfigError(
+                            f"DAG '{dag_id}' node '{node_id}' top-level input list must "
+                            "contain non-empty source names"
+                        )
+                    if len(set(inputs)) != len(inputs):
+                        raise DagConfigError(
+                            f"DAG '{dag_id}' node '{node_id}' top-level input list "
+                            "contains duplicate source names"
+                        )
 
             params = node.get("params", {})
             if not isinstance(params, dict):
@@ -153,6 +160,7 @@ class DagProcessor:
                         f"DAG '{dag_id}' node '{node_id}' cfg_params['{param_name}'] "
                         "must name one runtime cfg attribute"
                     )
+
             overlap = set(params) & set(cfg_params)
             if overlap:
                 raise DagConfigError(
@@ -189,6 +197,7 @@ class DagProcessor:
             raise TypeError("DAG inputs must be a dictionary")
 
         runtime_context = {} if runtime is None else dict(runtime)
+        external_inputs: dict[str, Any] = dict(inputs)
         context: dict[str, Any] = dict(inputs)
         dag_id = config["dag_id"]
         ordered_nodes = self._topological_nodes(config)
@@ -198,12 +207,20 @@ class DagProcessor:
             op_name = node["op"]
 
             try:
-                resolved_inputs = self._resolve_node_inputs(
-                    node.get("inputs", {}),
-                    context,
-                    dag_id=dag_id,
-                    node_id=node_id,
-                )
+                if "inputs" not in node:
+                    # Generic shorthand for operations that consume the DAG's
+                    # original external input contract. Do not use the growing
+                    # execution context here, otherwise hidden node dependencies
+                    # would be introduced.
+                    resolved_inputs = dict(external_inputs)
+                else:
+                    resolved_inputs = self._resolve_node_inputs(
+                        node["inputs"],
+                        context,
+                        dag_id=dag_id,
+                        node_id=node_id,
+                    )
+
                 operation_params = dict(node.get("params", {}))
                 operation_params.update(
                     self._resolve_cfg_params(
@@ -215,10 +232,13 @@ class DagProcessor:
                 )
 
                 operation = self.registry.get(op_name)
+                node_runtime = dict(runtime_context)
+                node_runtime["dag_id"] = dag_id
+                node_runtime["node_id"] = node_id
                 result = operation(
                     resolved_inputs,
                     operation_params,
-                    runtime_context,
+                    node_runtime,
                 )
             except Exception as exc:
                 if isinstance(exc, (DagConfigError, DagExecutionError)):
@@ -254,6 +274,8 @@ class DagProcessor:
 
         dependencies: dict[str, set[str]] = {}
         for node in nodes:
+            # Omitted inputs mean external DAG inputs only, so they create no
+            # dependencies on other DAG nodes.
             refs = set(self._iter_source_refs(node.get("inputs", {})))
             dependencies[node["id"]] = refs & node_ids
 
@@ -302,7 +324,7 @@ class DagProcessor:
         dag_id: str,
         node_id: str,
     ) -> dict[str, Any]:
-        """Resolve one node's top-level input declaration.
+        """Resolve one node's explicit input declaration.
 
         A top-level list is shorthand for selecting same-named context values:
 
@@ -389,6 +411,7 @@ class DagProcessor:
         dag_id: str,
         node_id: str,
     ) -> dict[str, Any]:
+        """Resolve cfg_params using the strict ``param: cfg_attribute`` contract."""
         if not cfg_params:
             return {}
 

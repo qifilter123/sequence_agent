@@ -1,3 +1,6 @@
 mydoc/
 doc/
 tests/
+__pycache__/
+src/model_diagnostic/dag/__pycache__/
+src/model_diagnostic/model/

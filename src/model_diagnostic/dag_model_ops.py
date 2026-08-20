@@ -1,10 +1,21 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Any
 
 import torch
 import torch.nn as nn
+
+from model_diagnostic.dag.dag_processor import DagConfigError
+from model_diagnostic.dag.model_builder_registry import (
+    MODEL_BUILDER_REGISTRY,
+    ModelExecutionNode,
+    ModelInputRef,
+    ModelNodeRef,
+    build_node,
+    compile_model_graph,
+    resolve_operation_params,
+    symbolic_input,
+)
 
 
 class ContinuousTimeEmbedding(nn.Module):
@@ -72,35 +83,11 @@ class ResidualAdd(nn.Module):
         return x + residual
 
 
-@dataclass(frozen=True)
-class ModelInputRef:
-    """Compiled reference to one external input of a DAG-built model."""
-
-    name: str
-
-
-@dataclass(frozen=True)
-class ModelNodeRef:
-    """Compiled reference to the output of another DAG-built model node."""
-
-    node_id: str
-
-
-@dataclass(frozen=True)
-class ModelExecutionNode:
-    """Runtime execution instruction produced by the model-builder DAG."""
-
-    node_id: str
-    op_name: str
-    inputs: dict[str, Any]
-
-
 class DagTorchModel(nn.Module):
     """Executable PyTorch model assembled by the model-builder DAG.
 
     DagProcessor is used only at build time. Once constructed, normal PyTorch
-    training/inference calls ``forward`` directly and executes this compiled
-    model plan without re-reading YAML or dispatching builder operations.
+    training/inference calls forward() directly and executes this compiled plan.
     """
 
     def __init__(
@@ -123,7 +110,7 @@ class DagTorchModel(nn.Module):
     def input_names(self) -> tuple[str, ...]:
         return self._input_names
 
-    def forward(self, *args: torch.Tensor, **kwargs: torch.Tensor) -> torch.Tensor:
+    def forward(self, *args: torch.Tensor, **kwargs: torch.Tensor) -> Any:
         if len(args) > len(self._input_names):
             raise TypeError(
                 f"Model expects at most {len(self._input_names)} positional inputs; "
@@ -167,6 +154,157 @@ def _resolve_runtime_refs(spec: Any, values: dict[str, Any]) -> Any:
     if isinstance(spec, dict):
         return {key: _resolve_runtime_refs(value, values) for key, value in spec.items()}
     return spec
+
+
+# ---------------------------------------------------------------------------
+# Model-builder DAG operations.
+# Importing this module registers all model operations, exactly like
+# dag_feature_ops.py populates FEATURE_DAG_REGISTRY.
+# ---------------------------------------------------------------------------
+
+
+@MODEL_BUILDER_REGISTRY.register("temporal_embedding")
+def build_temporal_embedding(inputs, params, runtime):
+    resolved = resolve_operation_params(params, runtime)
+    module = ContinuousTimeEmbedding(
+        out_dim=int(resolved["out_dim"]),
+        source_index=int(resolved.get("source_index", 0)),
+    )
+    return build_node(
+        op_name="temporal_embedding",
+        module=module,
+        inputs=inputs,
+        params=resolved,
+        runtime=runtime,
+    )
+
+
+@MODEL_BUILDER_REGISTRY.register("linear_transform")
+def build_linear_transform(inputs, params, runtime):
+    resolved = resolve_operation_params(params, runtime)
+    module = nn.Linear(
+        int(resolved["input_dim"]),
+        int(resolved["output_dim"]),
+        bias=bool(resolved.get("bias", True)),
+    )
+    return build_node(
+        op_name="linear_transform",
+        module=module,
+        inputs=inputs,
+        params=resolved,
+        runtime=runtime,
+    )
+
+
+@MODEL_BUILDER_REGISTRY.register("activation")
+def build_activation(inputs, params, runtime):
+    resolved = resolve_operation_params(params, runtime)
+    name = str(resolved.get("activation_name", "relu")).lower()
+    builders = {
+        "relu": nn.ReLU,
+        "gelu": nn.GELU,
+        "tanh": nn.Tanh,
+        "silu": nn.SiLU,
+    }
+    if name not in builders:
+        raise ValueError(f"Unsupported activation_name '{name}'")
+    return build_node(
+        op_name="activation",
+        module=builders[name](),
+        inputs=inputs,
+        params=resolved,
+        runtime=runtime,
+    )
+
+
+@MODEL_BUILDER_REGISTRY.register("dropout")
+def build_dropout(inputs, params, runtime):
+    resolved = resolve_operation_params(params, runtime)
+    return build_node(
+        op_name="dropout",
+        module=nn.Dropout(float(resolved["dropout_rate"])),
+        inputs=inputs,
+        params=resolved,
+        runtime=runtime,
+    )
+
+
+@MODEL_BUILDER_REGISTRY.register("GRU")
+def build_gru(inputs, params, runtime):
+    resolved = resolve_operation_params(params, runtime)
+    module = GRUTransform(
+        input_dim=int(resolved["input_dim"]),
+        hidden_dim=int(resolved["hidden_dim"]),
+        batch_first=bool(resolved.get("batch_first", True)),
+        num_layers=int(resolved.get("num_layers", 1)),
+        bidirectional=bool(resolved.get("bidirectional", False)),
+    )
+    return build_node(
+        op_name="GRU",
+        module=module,
+        inputs=inputs,
+        params=resolved,
+        runtime=runtime,
+    )
+
+
+@MODEL_BUILDER_REGISTRY.register("LayerNorm")
+def build_layer_norm(inputs, params, runtime):
+    resolved = resolve_operation_params(params, runtime)
+    return build_node(
+        op_name="LayerNorm",
+        module=nn.LayerNorm(int(resolved["normalized_shape"])),
+        inputs=inputs,
+        params=resolved,
+        runtime=runtime,
+    )
+
+
+@MODEL_BUILDER_REGISTRY.register("concat")
+def build_concat(inputs, params, runtime):
+    resolved = resolve_operation_params(params, runtime)
+    return build_node(
+        op_name="concat",
+        module=TensorConcat(dim=int(resolved.get("dim", -1))),
+        inputs=inputs,
+        params=resolved,
+        runtime=runtime,
+    )
+
+
+@MODEL_BUILDER_REGISTRY.register("residual")
+def build_residual(inputs, params, runtime):
+    resolved = resolve_operation_params(params, runtime)
+    return build_node(
+        op_name="residual",
+        module=ResidualAdd(),
+        inputs=inputs,
+        params=resolved,
+        runtime=runtime,
+    )
+
+
+@MODEL_BUILDER_REGISTRY.register("root_model")
+def build_root_model(inputs, params, runtime):
+    """Compile the symbolic graph into the final executable nn.Module.
+
+    root_model is a normal registered DAG node. It adds no model computation.
+    Its flat input mapping names the exposed model output(s).
+    """
+    resolved = resolve_operation_params(params, runtime)
+    if resolved:
+        raise DagConfigError(
+            "root_model does not accept params; its contract is derived from DAG inputs"
+        )
+
+    compiled = compile_model_graph(inputs)
+    return DagTorchModel(
+        modules=compiled.modules,
+        execution_plan=compiled.execution_plan,
+        output_ref=compiled.output_ref,
+        input_names=compiled.input_names,
+        node_metadata=compiled.node_metadata,
+    )
 
 
 class NextStepPredictionHelper(nn.Module):

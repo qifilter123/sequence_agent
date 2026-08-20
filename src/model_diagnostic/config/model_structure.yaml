@@ -149,15 +149,14 @@ nodes:
       x: fwd_dropout_1
       residual: fwd_dropout_0
 
-  # Terminal build node. It compiles the symbolic dependency graph above into
-  # one executable nn.Module whose forward(x_full) returns [B, L, hidden_dim].
+  # Terminal build node. root_model adds no computation; it exposes the
+  # upstream symbolic graph as one executable nn.Module. With one root input,
+  # forward() returns that value directly. External inputs (x_full here) are
+  # discovered from the symbolic dependency graph.
   - id: model
     op: root_model
     inputs:
-      output: fwd_residual_1
-    params:
-      input_order:
-        - x_full
+      embeddings: fwd_residual_1
 
 outputs:
   model: model

@@ -11,7 +11,6 @@ import torch.nn.functional as F
 
 from model_diagnostic import generic_feature_util as feature_util
 from model_diagnostic import generic_seq_generator as seq_gen
-from model_diagnostic import generic_model_ops
 from model_diagnostic import batch_util
 from model_diagnostic.cfg_base import CFG2
 
@@ -20,6 +19,7 @@ from model_diagnostic.diagnostic_registry import DIAGNOSTICS
 
 
 _FEATURE_DAG_RUNTIME = None
+_MODEL_DAG_RUNTIME = None
 
 
 def set_seed(seed: int):
@@ -39,7 +39,7 @@ def _get_feature_dag_runtime():
     global _FEATURE_DAG_RUNTIME
     if _FEATURE_DAG_RUNTIME is None:
         from model_diagnostic.dag.dag_processor import DagProcessor
-        from model_diagnostic.feature_dag_ops import FEATURE_DAG_REGISTRY
+        from model_diagnostic.dag_feature_ops import FEATURE_DAG_REGISTRY
 
         processor = DagProcessor(FEATURE_DAG_REGISTRY)
         config_dir = Path(__file__).resolve().parent / "config"
@@ -55,6 +55,33 @@ def reload_feature_dag_runtime():
     global _FEATURE_DAG_RUNTIME
     _FEATURE_DAG_RUNTIME = None
     return _get_feature_dag_runtime()
+
+
+def _get_model_dag_runtime():
+    """Lazily load the model-builder DAG config once per experiment/runtime.
+
+    Importing ``dag_model_ops`` populates MODEL_BUILDER_REGISTRY, mirroring
+    the feature DAG flow where importing ``dag_feature_ops`` populates
+    FEATURE_DAG_REGISTRY.
+    """
+    global _MODEL_DAG_RUNTIME
+    if _MODEL_DAG_RUNTIME is None:
+        from model_diagnostic.dag.dag_processor import DagProcessor
+        from model_diagnostic.dag_model_ops import MODEL_BUILDER_REGISTRY
+
+        processor = DagProcessor(MODEL_BUILDER_REGISTRY)
+        config_dir = Path(__file__).resolve().parent / "config"
+        model_cfg = processor.load_config(config_dir / "model_structure.yaml")
+        _MODEL_DAG_RUNTIME = (processor, model_cfg)
+
+    return _MODEL_DAG_RUNTIME
+
+
+def reload_model_dag_runtime():
+    """Reload model_structure.yaml for a new experiment in the same process."""
+    global _MODEL_DAG_RUNTIME
+    _MODEL_DAG_RUNTIME = None
+    return _get_model_dag_runtime()
 
 
 def build_full_features(batch, current_cfg, is_training=False):
@@ -410,15 +437,12 @@ def train(
 
 def init_model(current_cfg):
     """Build the encoder from model_structure.yaml using the generic DAG engine."""
-    from model_diagnostic.dag.dag_processor import DagProcessor
-    from model_diagnostic.dag.model_builder_registry import (
-        MODEL_BUILDER_REGISTRY,
+    processor, model_cfg = _get_model_dag_runtime()
+
+    from model_diagnostic.dag_model_ops import (
+        NextStepPredictionHelper,
         symbolic_input,
     )
-
-    processor = DagProcessor(MODEL_BUILDER_REGISTRY)
-    config_path = Path(__file__).resolve().parent / "config" / "model_structure.yaml"
-    model_cfg = processor.load_config(config_path)
 
     model = processor.run(
         model_cfg,
@@ -430,15 +454,14 @@ def init_model(current_cfg):
     # hidden in model_structure.yaml. Remove it when prediction + loss become a
     # separate DAG. Registering it as a child keeps optimizer/state_dict behavior
     # equivalent to the current training pipeline during the migration.
-    model.prediction_helper = generic_model_ops.NextStepPredictionHelper(
+    model.prediction_helper = NextStepPredictionHelper(
         hidden_dim=current_cfg.hidden_dim,
         sw_classes=current_cfg.sw_classes,
         is_new_classes=current_cfg.is_new_classes,
     )
-    model.model_structure_path = str(config_path)
+    model.model_structure_path = str(model_cfg)
 
     return model.to(current_cfg.device)
-
 
 def load_trained_model(current_cfg):
     model = init_model(current_cfg)

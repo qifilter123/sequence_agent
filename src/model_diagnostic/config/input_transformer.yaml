@@ -2,11 +2,14 @@ version: 1
 dag_id: input_transformer
 
 nodes:
-  # Time features
+
+  # Omitted inputs means these operations receive the transform DAG's original
+  # external/raw inputs.
   - id: dt_to_pre
     op: dt_to_pre
-    inputs:
-      - dt
+
+  - id: amt_to_pre
+    op: amt_to_pre
 
   - id: dt_to_history
     op: field_to_history
@@ -16,21 +19,6 @@ nodes:
     params:
       inverse: true
 
-  # Amount features
-  - id: amt_norm
-    op: amt_norm
-    inputs:
-      amount: amount
-    params:
-      mean_config_key: amt_mean
-      deviation_config_key: amt_dv
-      clip_config_key: amt_clip_val
-
-  - id: amt_to_pre
-    op: amt_to_pre
-    inputs:
-      amount: amount
-
   - id: amt_to_history
     op: field_to_history
     inputs:
@@ -39,13 +27,22 @@ nodes:
     params:
       inverse: false
 
-  # Shared switch decay
+  # Amount features
+  - id: amt_norm
+    op: amt_norm
+    inputs:
+      amount: amount
+    cfg_params:
+      mean: amt_mean
+      deviation: amt_dv
+      clip: amt_clip_val
+
+  # Shared switch decay. Omitted inputs means this op reads dt from the raw DAG
+  # inputs; tau is bound from runtime.cfg.tau_sw.
   - id: switch_decay_factor
     op: switch_decay
-    inputs:
-      dt: dt
-    params:
-      tau_config_key: tau_sw
+    cfg_params:
+      tau: tau_sw
 
   - id: sw_ip_soft
     op: multiply
@@ -78,38 +75,39 @@ nodes:
       right: switch_decay_factor
 
   # Cumulative-distinct transforms
+  # Base options: log1p, log21p, log101p
   - id: cd_ip
     op: stable_log
     inputs:
-      value: cum_dist_ip
+      field: cum_dist_ip
     params:
       base: log1p
 
   - id: cd_email
     op: stable_log
     inputs:
-      value: cum_dist_email
+      field: cum_dist_email
     params:
       base: log1p
 
   - id: cd_fp
     op: stable_log
     inputs:
-      value: cum_dist_fp
+      field: cum_dist_fp
     params:
       base: log1p
 
   - id: cd_bill
     op: stable_log
     inputs:
-      value: cum_dist_bill
+      field: cum_dist_bill
     params:
       base: log1p
 
   - id: cd_ship
     op: stable_log
     inputs:
-      value: cum_dist_ship
+      field: cum_dist_ship
     params:
       base: log1p
 

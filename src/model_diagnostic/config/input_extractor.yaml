@@ -5,23 +5,24 @@ nodes:
   - id: extracted_batch
     op: extract_sequence_fields
     inputs:
-      - mask
-      - dt
-      - amount
-      - sw_ip
-      - sw_email
-      - sw_fp
-      - sw_bill
-      - sw_ship
-      - cum_dist_ip
-      - cum_dist_email
-      - cum_dist_fp
-      - cum_dist_bill
-      - cum_dist_ship
-      - is_new_ip
-      - is_new_email
-      - is_new_fp
-      - is_new_bill
-      - is_new_ship
+      fields:
+        mask: mask
+        dt: dt
+        amount: amount
+        sw_ip: sw_ip
+        sw_email: sw_email
+        sw_fp: sw_fp
+        sw_bill: sw_bill
+        sw_ship: sw_ship
+        cum_dist_ip: cum_dist_ip
+        cum_dist_email: cum_dist_email
+        cum_dist_fp: cum_dist_fp
+        cum_dist_bill: cum_dist_bill
+        cum_dist_ship: cum_dist_ship
+        is_new_ip: is_new_ip
+        is_new_email: is_new_email
+        is_new_fp: is_new_fp
+        is_new_bill: is_new_bill
+        is_new_ship: is_new_ship
     cfg_params:
       device: device
