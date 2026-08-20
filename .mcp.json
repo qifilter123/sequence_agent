@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "diagnostics": {
+      "type": "stdio",
+      "command": "C:\\projec\\pycharm_projects\\venv-2\\Scripts\\diagnostic-mcp.exe"
+    }
+  }
+}

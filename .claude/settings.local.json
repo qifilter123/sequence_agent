@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__diagnostics__initialize_session",
+      "mcp__diagnostics__get_context",
+      "mcp__diagnostics__train_segment",
+      "mcp__diagnostics__list_metrics",
+      "mcp__diagnostics__query_metrics",
+      "mcp__diagnostics__get_tunable_parameters",
+      "mcp__diagnostics__restart_session",
+      "mcp__diagnostics__get_experiment_comparison",
+      "mcp__diagnostics__evaluate_hdbscan"
+    ]
+  },
+  "enableAllProjectMcpServers": true,
+  "enabledMcpjsonServers": [
+    "diagnostics"
+  ]
+}

@@ -1,0 +1,165 @@
+version: 1
+dag_id: input_transformer
+
+nodes:
+  # Time features
+  - id: dt_to_pre
+    op: dt_to_pre
+    inputs:
+      - dt
+
+  - id: dt_to_history
+    op: field_to_history
+    inputs:
+      field: dt
+      mask: mask
+    params:
+      inverse: true
+
+  # Amount features
+  - id: amt_norm
+    op: amt_norm
+    inputs:
+      amount: amount
+    params:
+      mean_config_key: amt_mean
+      deviation_config_key: amt_dv
+      clip_config_key: amt_clip_val
+
+  - id: amt_to_pre
+    op: amt_to_pre
+    inputs:
+      amount: amount
+
+  - id: amt_to_history
+    op: field_to_history
+    inputs:
+      field: amount
+      mask: mask
+    params:
+      inverse: false
+
+  # Shared switch decay
+  - id: switch_decay_factor
+    op: switch_decay
+    inputs:
+      dt: dt
+    params:
+      tau_config_key: tau_sw
+
+  - id: sw_ip_soft
+    op: multiply
+    inputs:
+      left: sw_ip
+      right: switch_decay_factor
+
+  - id: sw_email_soft
+    op: multiply
+    inputs:
+      left: sw_email
+      right: switch_decay_factor
+
+  - id: sw_fp_soft
+    op: multiply
+    inputs:
+      left: sw_fp
+      right: switch_decay_factor
+
+  - id: sw_bill_soft
+    op: multiply
+    inputs:
+      left: sw_bill
+      right: switch_decay_factor
+
+  - id: sw_ship_soft
+    op: multiply
+    inputs:
+      left: sw_ship
+      right: switch_decay_factor
+
+  # Cumulative-distinct transforms
+  - id: cd_ip
+    op: stable_log
+    inputs:
+      value: cum_dist_ip
+    params:
+      base: log1p
+
+  - id: cd_email
+    op: stable_log
+    inputs:
+      value: cum_dist_email
+    params:
+      base: log1p
+
+  - id: cd_fp
+    op: stable_log
+    inputs:
+      value: cum_dist_fp
+    params:
+      base: log1p
+
+  - id: cd_bill
+    op: stable_log
+    inputs:
+      value: cum_dist_bill
+    params:
+      base: log1p
+
+  - id: cd_ship
+    op: stable_log
+    inputs:
+      value: cum_dist_ship
+    params:
+      base: log1p
+
+  # Stable model representation contract: exact 16-D ordering.
+  - id: model_input
+    op: stack_fields
+    inputs:
+      fields:
+        - dt
+        - dt_to_pre
+        - dt_to_history
+        - amt_norm
+        - amt_to_pre
+        - amt_to_history
+        - sw_ip_soft
+        - sw_email_soft
+        - sw_fp_soft
+        - sw_bill_soft
+        - sw_ship_soft
+        - cd_ip
+        - cd_email
+        - cd_fp
+        - cd_bill
+        - cd_ship
+      mask: mask
+    params:
+      dim: -1
+      apply_mask: true
+
+  # Stable downstream/loss contract.
+  - id: raw
+    op: build_dict
+    inputs:
+      dt_to_pre: dt_to_pre
+      amt_norm: amt_norm
+      amt_to_pre: amt_to_pre
+      dt: dt
+      sw_ip: sw_ip
+      sw_email: sw_email
+      sw_fp: sw_fp
+      sw_bill: sw_bill
+      sw_ship: sw_ship
+      switch_decay_factor: switch_decay_factor
+      mask: mask
+      is_new_ip: is_new_ip
+      is_new_email: is_new_email
+      is_new_fp: is_new_fp
+      is_new_bill: is_new_bill
+      is_new_ship: is_new_ship
+
+outputs:
+  model_input: model_input
+  raw: raw

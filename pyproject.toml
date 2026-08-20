@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+
+[project]
+name = "model-diagnostic"
+version = "0.1.0"
+description = "Stateful MCP server for PyTorch model diagnostics"
+requires-python = ">=3.10"
+
+dependencies = [
+    "mcp>=2,<3",
+    "numpy"
+]
+
+
+[project.scripts]
+diagnostic-mcp = "model_diagnostic.diagnostic_mcp_server:main"
+
+
+[tool.setuptools.packages.find]
+where = ["src"]

@@ -1,0 +1,2 @@
+[console_scripts]
+diagnostic-mcp = model_diagnostic.diagnostic_mcp_server:main

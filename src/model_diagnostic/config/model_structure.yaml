@@ -1,0 +1,163 @@
+version: 1
+dag_id: model_structure
+
+# Source of truth for the trainable encoder topology.
+# This is a BUILD DAG: DagProcessor runs it once during model initialization.
+# Its root node outputs an executable torch.nn.Module. During training/inference,
+# PyTorch calls that module's forward(); DagProcessor is not on the hot path.
+#
+# Prediction heads and loss are intentionally NOT part of this DAG. The trainer
+# temporarily attaches the legacy prediction helper until prediction + loss are
+# migrated into their own DAG.
+
+nodes:
+  # x_full -> t_emb
+  - id: temporal_embedding
+    op: temporal_embedding
+    inputs:
+      x: x_full
+    params:
+      source_index: 0
+      out_dim:
+        cfg: time_emb_dim
+
+  # (x_full, t_emb) -> sw_combo
+  - id: x_with_time
+    op: concat
+    inputs:
+      tensors:
+        - x_full
+        - temporal_embedding
+    params:
+      dim: -1
+
+  - id: feature_corr_linear_1
+    op: linear_transform
+    inputs:
+      x: x_with_time
+    params:
+      input_dim:
+        add:
+          - cfg: input_base_dim
+          - cfg: time_emb_dim
+      output_dim: 32
+
+  - id: feature_corr_activation_1
+    op: activation
+    inputs:
+      x: feature_corr_linear_1
+    params:
+      activation_name: relu
+
+  - id: feature_corr_dropout
+    op: dropout
+    inputs:
+      x: feature_corr_activation_1
+    params:
+      dropout_rate:
+        cfg: dropout
+
+  - id: feature_corr_linear_2
+    op: linear_transform
+    inputs:
+      x: feature_corr_dropout
+    params:
+      input_dim: 32
+      output_dim:
+        cfg: combo_dim
+
+  - id: sw_combo
+    op: activation
+    inputs:
+      x: feature_corr_linear_2
+    params:
+      activation_name: relu
+
+  # (x_full, t_emb, sw_combo) -> forward sequence stack
+  - id: fwd_input
+    op: concat
+    inputs:
+      tensors:
+        - x_full
+        - temporal_embedding
+        - sw_combo
+    params:
+      dim: -1
+
+  # Block 0: no residual.
+  - id: fwd_gru_0
+    op: GRU
+    inputs:
+      x: fwd_input
+    params:
+      input_dim:
+        add:
+          - cfg: input_base_dim
+          - cfg: time_emb_dim
+          - cfg: combo_dim
+      hidden_dim:
+        cfg: hidden_dim
+      batch_first: true
+
+  - id: fwd_norm_0
+    op: LayerNorm
+    inputs:
+      x: fwd_gru_0
+    params:
+      normalized_shape:
+        cfg: hidden_dim
+
+  - id: fwd_dropout_0
+    op: dropout
+    inputs:
+      x: fwd_norm_0
+    params:
+      dropout_rate:
+        cfg: dropout
+
+  # Block 1: residual is explicit in the DAG.
+  - id: fwd_gru_1
+    op: GRU
+    inputs:
+      x: fwd_dropout_0
+    params:
+      input_dim:
+        cfg: hidden_dim
+      hidden_dim:
+        cfg: hidden_dim
+      batch_first: true
+
+  - id: fwd_norm_1
+    op: LayerNorm
+    inputs:
+      x: fwd_gru_1
+    params:
+      normalized_shape:
+        cfg: hidden_dim
+
+  - id: fwd_dropout_1
+    op: dropout
+    inputs:
+      x: fwd_norm_1
+    params:
+      dropout_rate:
+        cfg: dropout
+
+  - id: fwd_residual_1
+    op: residual
+    inputs:
+      x: fwd_dropout_1
+      residual: fwd_dropout_0
+
+  # Terminal build node. It compiles the symbolic dependency graph above into
+  # one executable nn.Module whose forward(x_full) returns [B, L, hidden_dim].
+  - id: model
+    op: root_model
+    inputs:
+      output: fwd_residual_1
+    params:
+      input_order:
+        - x_full
+
+outputs:
+  model: model
