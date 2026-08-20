@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -21,8 +22,24 @@ class DagProcessor:
     """Execute declarative DAG configs using a supplied operation registry.
 
     The processor owns graph orchestration only: config validation, dependency
-    ordering, input resolution, operation dispatch, and named output assembly.
-    Tensor/feature-specific behavior belongs in registered operations.
+    ordering, input resolution, cfg-parameter binding, operation dispatch, and
+    output assembly. Domain-specific behavior belongs in registered operations.
+
+    Node input forms:
+      mapping: aliases are preserved, e.g. ``{field: source_node}``.
+      list: top-level source names are selected from the DAG context and exposed
+            to the operation as an insertion-ordered ``{name: value}`` mapping.
+            Nested lists inside a mapping preserve normal list semantics.
+
+    Node parameter forms:
+      params: literal operation parameters.
+      cfg_params: ``operation_param: cfg_attribute`` bindings resolved from
+                  ``runtime['cfg']`` and merged into params before invocation.
+
+    DAG outputs:
+      If ``outputs`` is configured, it is used exactly as before.
+      If omitted, the final node result is returned directly when it is a
+      mapping; otherwise it is returned as ``{final_node_id: result}``.
     """
 
     def __init__(self, registry: OperationRegistry) -> None:
@@ -46,7 +63,6 @@ class DagProcessor:
             )
 
         self.validate_config(config)
-        # Isolate runtime callers from accidental mutation of the parsed config.
         return deepcopy(config)
 
     def validate_config(self, config: dict[str, Any]) -> None:
@@ -95,33 +111,71 @@ class DagProcessor:
                 ) from exc
 
             inputs = node.get("inputs", {})
-            params = node.get("params", {})
-            if not isinstance(inputs, dict):
+            if not isinstance(inputs, (dict, list)):
                 raise DagConfigError(
-                    f"DAG '{dag_id}' node '{node_id}' inputs must be a mapping"
+                    f"DAG '{dag_id}' node '{node_id}' inputs must be a mapping or list"
                 )
+            if isinstance(inputs, list):
+                if not inputs:
+                    raise DagConfigError(
+                        f"DAG '{dag_id}' node '{node_id}' input list must be non-empty"
+                    )
+                if not all(isinstance(name, str) and name for name in inputs):
+                    raise DagConfigError(
+                        f"DAG '{dag_id}' node '{node_id}' top-level input list must "
+                        "contain non-empty source names"
+                    )
+                if len(set(inputs)) != len(inputs):
+                    raise DagConfigError(
+                        f"DAG '{dag_id}' node '{node_id}' top-level input list "
+                        "contains duplicate source names"
+                    )
+
+            params = node.get("params", {})
             if not isinstance(params, dict):
                 raise DagConfigError(
                     f"DAG '{dag_id}' node '{node_id}' params must be a mapping"
                 )
 
-        outputs = config.get("outputs")
-        if not isinstance(outputs, dict) or not outputs:
-            raise DagConfigError(
-                f"DAG '{dag_id}' requires a non-empty 'outputs' mapping"
-            )
-        for output_name, source in outputs.items():
-            if not isinstance(output_name, str) or not output_name:
+            cfg_params = node.get("cfg_params", {})
+            if not isinstance(cfg_params, dict):
                 raise DagConfigError(
-                    f"DAG '{dag_id}' output names must be non-empty strings"
+                    f"DAG '{dag_id}' node '{node_id}' cfg_params must be a mapping"
                 )
-            if not isinstance(source, str) or not source:
+            for param_name, cfg_name in cfg_params.items():
+                if not isinstance(param_name, str) or not param_name:
+                    raise DagConfigError(
+                        f"DAG '{dag_id}' node '{node_id}' cfg_params keys must be "
+                        "non-empty strings"
+                    )
+                if not isinstance(cfg_name, str) or not cfg_name:
+                    raise DagConfigError(
+                        f"DAG '{dag_id}' node '{node_id}' cfg_params['{param_name}'] "
+                        "must name one runtime cfg attribute"
+                    )
+            overlap = set(params) & set(cfg_params)
+            if overlap:
                 raise DagConfigError(
-                    f"DAG '{dag_id}' output '{output_name}' must reference one source name"
+                    f"DAG '{dag_id}' node '{node_id}' defines the same parameter in "
+                    f"params and cfg_params: {', '.join(sorted(overlap))}"
                 )
 
-        # Detect cycles between nodes before execution. External inputs are
-        # deliberately resolved at runtime because they vary by caller.
+        outputs = config.get("outputs")
+        if outputs is not None:
+            if not isinstance(outputs, dict) or not outputs:
+                raise DagConfigError(
+                    f"DAG '{dag_id}' outputs must be a non-empty mapping when provided"
+                )
+            for output_name, source in outputs.items():
+                if not isinstance(output_name, str) or not output_name:
+                    raise DagConfigError(
+                        f"DAG '{dag_id}' output names must be non-empty strings"
+                    )
+                if not isinstance(source, str) or not source:
+                    raise DagConfigError(
+                        f"DAG '{dag_id}' output '{output_name}' must reference one source name"
+                    )
+
         self._topological_nodes(config)
 
     def run(
@@ -130,29 +184,40 @@ class DagProcessor:
         inputs: dict[str, Any],
         runtime: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Execute a validated DAG and return its configured named outputs."""
+        """Execute a validated DAG and return named outputs."""
         if not isinstance(inputs, dict):
             raise TypeError("DAG inputs must be a dictionary")
 
         runtime_context = {} if runtime is None else dict(runtime)
         context: dict[str, Any] = dict(inputs)
         dag_id = config["dag_id"]
+        ordered_nodes = self._topological_nodes(config)
 
-        for node in self._topological_nodes(config):
+        for node in ordered_nodes:
             node_id = node["id"]
             op_name = node["op"]
 
             try:
-                resolved_inputs = self._resolve_input_spec(
+                resolved_inputs = self._resolve_node_inputs(
                     node.get("inputs", {}),
                     context,
                     dag_id=dag_id,
                     node_id=node_id,
                 )
+                operation_params = dict(node.get("params", {}))
+                operation_params.update(
+                    self._resolve_cfg_params(
+                        node.get("cfg_params", {}),
+                        runtime_context,
+                        dag_id=dag_id,
+                        node_id=node_id,
+                    )
+                )
+
                 operation = self.registry.get(op_name)
                 result = operation(
                     resolved_inputs,
-                    dict(node.get("params", {})),
+                    operation_params,
                     runtime_context,
                 )
             except Exception as exc:
@@ -164,16 +229,23 @@ class DagProcessor:
 
             context[node_id] = result
 
-        result: dict[str, Any] = {}
-        for output_name, source_name in config["outputs"].items():
-            if source_name not in context:
-                raise DagExecutionError(
-                    f"DAG '{dag_id}' output '{output_name}' references unavailable "
-                    f"source '{source_name}'"
-                )
-            result[output_name] = context[source_name]
+        configured_outputs = config.get("outputs")
+        if configured_outputs is not None:
+            result: dict[str, Any] = {}
+            for output_name, source_name in configured_outputs.items():
+                if source_name not in context:
+                    raise DagExecutionError(
+                        f"DAG '{dag_id}' output '{output_name}' references unavailable "
+                        f"source '{source_name}'"
+                    )
+                result[output_name] = context[source_name]
+            return result
 
-        return result
+        final_node_id = ordered_nodes[-1]["id"]
+        final_result = context[final_node_id]
+        if isinstance(final_result, Mapping):
+            return dict(final_result)
+        return {final_node_id: final_result}
 
     def _topological_nodes(self, config: dict[str, Any]) -> list[dict[str, Any]]:
         nodes: list[dict[str, Any]] = config["nodes"]
@@ -222,6 +294,49 @@ class DagProcessor:
             for value in spec.values():
                 yield from self._iter_source_refs(value)
 
+    def _resolve_node_inputs(
+        self,
+        spec: dict[str, Any] | list[str],
+        context: dict[str, Any],
+        *,
+        dag_id: str,
+        node_id: str,
+    ) -> dict[str, Any]:
+        """Resolve one node's top-level input declaration.
+
+        A top-level list is shorthand for selecting same-named context values:
+
+            inputs: [mask, dt]
+
+        becomes:
+
+            {"mask": context["mask"], "dt": context["dt"]}
+
+        Mapping inputs retain alias/nested-structure semantics.
+        """
+        if isinstance(spec, list):
+            resolved: dict[str, Any] = {}
+            for source_name in spec:
+                if source_name not in context:
+                    raise DagExecutionError(
+                        f"DAG '{dag_id}' node '{node_id}' requires unavailable input "
+                        f"'{source_name}'. Available sources: {', '.join(sorted(context))}"
+                    )
+                resolved[source_name] = context[source_name]
+            return resolved
+
+        resolved = self._resolve_input_spec(
+            spec,
+            context,
+            dag_id=dag_id,
+            node_id=node_id,
+        )
+        if not isinstance(resolved, dict):
+            raise DagConfigError(
+                f"DAG '{dag_id}' node '{node_id}' resolved inputs must be a mapping"
+            )
+        return resolved
+
     def _resolve_input_spec(
         self,
         spec: Any,
@@ -230,12 +345,7 @@ class DagProcessor:
         dag_id: str,
         node_id: str,
     ) -> Any:
-        """Resolve source-name references recursively.
-
-        YAML node ``inputs`` are declarative references, not Python expressions.
-        Strings always mean context source names; lists/dicts preserve structure.
-        Literal operation parameters belong under ``params``.
-        """
+        """Resolve source-name references recursively for mapping-style inputs."""
         if isinstance(spec, str):
             if spec not in context:
                 raise DagExecutionError(
@@ -270,3 +380,31 @@ class DagProcessor:
             f"DAG '{dag_id}' node '{node_id}' input references must be strings, "
             "lists, or mappings. Put literal values under 'params'."
         )
+
+    def _resolve_cfg_params(
+        self,
+        cfg_params: dict[str, str],
+        runtime: dict[str, Any],
+        *,
+        dag_id: str,
+        node_id: str,
+    ) -> dict[str, Any]:
+        if not cfg_params:
+            return {}
+
+        cfg = runtime.get("cfg")
+        if cfg is None:
+            raise DagExecutionError(
+                f"DAG '{dag_id}' node '{node_id}' declares cfg_params but "
+                "runtime['cfg'] is unavailable"
+            )
+
+        resolved: dict[str, Any] = {}
+        for param_name, cfg_name in cfg_params.items():
+            if not hasattr(cfg, cfg_name):
+                raise DagExecutionError(
+                    f"DAG '{dag_id}' node '{node_id}' cfg_params['{param_name}'] "
+                    f"references missing cfg attribute '{cfg_name}'"
+                )
+            resolved[param_name] = getattr(cfg, cfg_name)
+        return resolved
