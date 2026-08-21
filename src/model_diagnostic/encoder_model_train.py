@@ -19,7 +19,6 @@ from model_diagnostic.diagnostic_registry import DIAGNOSTICS
 
 
 _FEATURE_DAG_RUNTIME = None
-_MODEL_DAG_RUNTIME = None
 
 
 def set_seed(seed: int):
@@ -55,33 +54,6 @@ def reload_feature_dag_runtime():
     global _FEATURE_DAG_RUNTIME
     _FEATURE_DAG_RUNTIME = None
     return _get_feature_dag_runtime()
-
-
-def _get_model_dag_runtime():
-    """Lazily load the model-builder DAG config once per experiment/runtime.
-
-    Importing ``dag_model_ops`` populates MODEL_BUILDER_REGISTRY, mirroring
-    the feature DAG flow where importing ``dag_feature_ops`` populates
-    FEATURE_DAG_REGISTRY.
-    """
-    global _MODEL_DAG_RUNTIME
-    if _MODEL_DAG_RUNTIME is None:
-        from model_diagnostic.dag.dag_processor import DagProcessor
-        from model_diagnostic.dag_model_ops import MODEL_BUILDER_REGISTRY
-
-        processor = DagProcessor(MODEL_BUILDER_REGISTRY)
-        config_dir = Path(__file__).resolve().parent / "config"
-        model_cfg = processor.load_config(config_dir / "model_structure.yaml")
-        _MODEL_DAG_RUNTIME = (processor, model_cfg)
-
-    return _MODEL_DAG_RUNTIME
-
-
-def reload_model_dag_runtime():
-    """Reload model_structure.yaml for a new experiment in the same process."""
-    global _MODEL_DAG_RUNTIME
-    _MODEL_DAG_RUNTIME = None
-    return _get_model_dag_runtime()
 
 
 def build_full_features(batch, current_cfg, is_training=False):
@@ -437,12 +409,21 @@ def train(
 
 def init_model(current_cfg):
     """Build the encoder from model_structure.yaml using the generic DAG engine."""
-    processor, model_cfg = _get_model_dag_runtime()
-
-    from model_diagnostic.dag_model_ops import (
-        NextStepPredictionHelper,
+    from model_diagnostic.dag.dag_processor import DagProcessor
+    from model_diagnostic.dag.model_builder_registry import (
+        MODEL_BUILDER_REGISTRY,
         symbolic_input,
     )
+    from model_diagnostic.dag_model_ops import NextStepPredictionHelper
+
+    config_path = (
+        Path(__file__).resolve().parent
+        / "config"
+        / "model_structure.yaml"
+    )
+
+    processor = DagProcessor(MODEL_BUILDER_REGISTRY)
+    model_cfg = processor.load_config(config_path)
 
     model = processor.run(
         model_cfg,
@@ -450,16 +431,13 @@ def init_model(current_cfg):
         runtime={"cfg": current_cfg},
     )["model"]
 
-    # Transitional seam only. It is deliberately visible here instead of being
-    # hidden in model_structure.yaml. Remove it when prediction + loss become a
-    # separate DAG. Registering it as a child keeps optimizer/state_dict behavior
-    # equivalent to the current training pipeline during the migration.
     model.prediction_helper = NextStepPredictionHelper(
         hidden_dim=current_cfg.hidden_dim,
         sw_classes=current_cfg.sw_classes,
         is_new_classes=current_cfg.is_new_classes,
     )
-    model.model_structure_path = str(model_cfg)
+
+    model.model_structure_path = str(config_path)
 
     return model.to(current_cfg.device)
 

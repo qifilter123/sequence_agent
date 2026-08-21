@@ -20,6 +20,8 @@ from model_diagnostic.encoder_model_train import (
 from model_diagnostic.cfg_base import CFG2
 from model_diagnostic.batch_util import _META_KEYS
 
+from model_diagnostic.dag_model_ops import extract_last_embedding
+
 
 @dataclass
 class HBSCAN4Config:
@@ -60,7 +62,8 @@ def collect_record_embeddings(model, cfg: CFG2, hcfg: HBSCAN4Config, is_training
                  for k in data if k not in _META_KEYS}
         # 提取 Embedding 时始终保持 is_training=False，确保前向传播没有 Dropout/Masking 干扰
         x_full, raw = build_full_features(batch, cfg, is_training=False)
-        emb, _ = model.extract_embedding(x_full, raw["mask"])
+        fwd_out = model(x_full)
+        emb = extract_last_embedding(fwd_out, raw["mask"])
         embs.append(emb.cpu())
     X = torch.cat(embs, dim=0).numpy().astype(np.float32)
 

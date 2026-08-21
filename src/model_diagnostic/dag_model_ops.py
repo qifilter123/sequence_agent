@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from numbers import Number
 from typing import Any
 
 import torch
@@ -13,8 +14,6 @@ from model_diagnostic.dag.model_builder_registry import (
     ModelNodeRef,
     build_node,
     compile_model_graph,
-    resolve_operation_params,
-    symbolic_input,
 )
 
 
@@ -163,43 +162,57 @@ def _resolve_runtime_refs(spec: Any, values: dict[str, Any]) -> Any:
 # ---------------------------------------------------------------------------
 
 
+@MODEL_BUILDER_REGISTRY.register("add")
+def add_numbers(inputs, params, runtime):
+    """Build-time binary numeric addition for derived model parameters."""
+    del runtime
+    if inputs:
+        raise ValueError("add accepts no DAG data inputs; use params/cfg_params/derived_params")
+    if set(params) != {"left", "right"}:
+        raise ValueError("add requires exactly two parameters: 'left' and 'right'")
+
+    left = params["left"]
+    right = params["right"]
+    for name, value in (("left", left), ("right", right)):
+        if isinstance(value, bool) or not isinstance(value, Number):
+            raise TypeError(f"add parameter '{name}' must be numeric")
+    return left + right
+
+
 @MODEL_BUILDER_REGISTRY.register("temporal_embedding")
 def build_temporal_embedding(inputs, params, runtime):
-    resolved = resolve_operation_params(params, runtime)
     module = ContinuousTimeEmbedding(
-        out_dim=int(resolved["out_dim"]),
-        source_index=int(resolved.get("source_index", 0)),
+        out_dim=int(params["out_dim"]),
+        source_index=int(params.get("source_index", 0)),
     )
     return build_node(
         op_name="temporal_embedding",
         module=module,
         inputs=inputs,
-        params=resolved,
+        params=params,
         runtime=runtime,
     )
 
 
 @MODEL_BUILDER_REGISTRY.register("linear_transform")
 def build_linear_transform(inputs, params, runtime):
-    resolved = resolve_operation_params(params, runtime)
     module = nn.Linear(
-        int(resolved["input_dim"]),
-        int(resolved["output_dim"]),
-        bias=bool(resolved.get("bias", True)),
+        int(params["input_dim"]),
+        int(params["output_dim"]),
+        bias=bool(params.get("bias", True)),
     )
     return build_node(
         op_name="linear_transform",
         module=module,
         inputs=inputs,
-        params=resolved,
+        params=params,
         runtime=runtime,
     )
 
 
 @MODEL_BUILDER_REGISTRY.register("activation")
 def build_activation(inputs, params, runtime):
-    resolved = resolve_operation_params(params, runtime)
-    name = str(resolved.get("activation_name", "relu")).lower()
+    name = str(params.get("activation_name", "relu")).lower()
     builders = {
         "relu": nn.ReLU,
         "gelu": nn.GELU,
@@ -212,74 +225,69 @@ def build_activation(inputs, params, runtime):
         op_name="activation",
         module=builders[name](),
         inputs=inputs,
-        params=resolved,
+        params=params,
         runtime=runtime,
     )
 
 
 @MODEL_BUILDER_REGISTRY.register("dropout")
 def build_dropout(inputs, params, runtime):
-    resolved = resolve_operation_params(params, runtime)
     return build_node(
         op_name="dropout",
-        module=nn.Dropout(float(resolved["dropout_rate"])),
+        module=nn.Dropout(float(params["dropout_rate"])),
         inputs=inputs,
-        params=resolved,
+        params=params,
         runtime=runtime,
     )
 
 
 @MODEL_BUILDER_REGISTRY.register("GRU")
 def build_gru(inputs, params, runtime):
-    resolved = resolve_operation_params(params, runtime)
     module = GRUTransform(
-        input_dim=int(resolved["input_dim"]),
-        hidden_dim=int(resolved["hidden_dim"]),
-        batch_first=bool(resolved.get("batch_first", True)),
-        num_layers=int(resolved.get("num_layers", 1)),
-        bidirectional=bool(resolved.get("bidirectional", False)),
+        input_dim=int(params["input_dim"]),
+        hidden_dim=int(params["hidden_dim"]),
+        batch_first=bool(params.get("batch_first", True)),
+        num_layers=int(params.get("num_layers", 1)),
+        bidirectional=bool(params.get("bidirectional", False)),
     )
     return build_node(
         op_name="GRU",
         module=module,
         inputs=inputs,
-        params=resolved,
+        params=params,
         runtime=runtime,
     )
 
 
 @MODEL_BUILDER_REGISTRY.register("LayerNorm")
 def build_layer_norm(inputs, params, runtime):
-    resolved = resolve_operation_params(params, runtime)
     return build_node(
         op_name="LayerNorm",
-        module=nn.LayerNorm(int(resolved["normalized_shape"])),
+        module=nn.LayerNorm(int(params["normalized_shape"])),
         inputs=inputs,
-        params=resolved,
+        params=params,
         runtime=runtime,
     )
 
 
 @MODEL_BUILDER_REGISTRY.register("concat")
 def build_concat(inputs, params, runtime):
-    resolved = resolve_operation_params(params, runtime)
     return build_node(
         op_name="concat",
-        module=TensorConcat(dim=int(resolved.get("dim", -1))),
+        module=TensorConcat(dim=int(params.get("dim", -1))),
         inputs=inputs,
-        params=resolved,
+        params=params,
         runtime=runtime,
     )
 
 
 @MODEL_BUILDER_REGISTRY.register("residual")
 def build_residual(inputs, params, runtime):
-    resolved = resolve_operation_params(params, runtime)
     return build_node(
         op_name="residual",
         module=ResidualAdd(),
         inputs=inputs,
-        params=resolved,
+        params=params,
         runtime=runtime,
     )
 
@@ -291,8 +299,7 @@ def build_root_model(inputs, params, runtime):
     root_model is a normal registered DAG node. It adds no model computation.
     Its flat input mapping names the exposed model output(s).
     """
-    resolved = resolve_operation_params(params, runtime)
-    if resolved:
+    if params:
         raise DagConfigError(
             "root_model does not accept params; its contract is derived from DAG inputs"
         )

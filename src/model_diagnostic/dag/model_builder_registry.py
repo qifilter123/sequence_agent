@@ -77,13 +77,6 @@ def symbolic_input(name: str) -> ModelInput:
     return ModelInput(name)
 
 
-def require_cfg(runtime: dict[str, Any]) -> Any:
-    cfg = runtime.get("cfg")
-    if cfg is None:
-        raise ValueError("Model builder operation requires runtime['cfg']")
-    return cfg
-
-
 def require_node_id(runtime: dict[str, Any]) -> str:
     node_id = runtime.get("node_id")
     if not isinstance(node_id, str) or not node_id:
@@ -94,47 +87,6 @@ def require_node_id(runtime: dict[str, Any]) -> str:
             "an nn.ModuleDict key"
         )
     return node_id
-
-
-def resolve_param(value: Any, cfg: Any) -> Any:
-    """Resolve safe declarative model parameter expressions.
-
-    Supported expressions:
-      {cfg: hidden_dim}
-      {add: [{cfg: input_base_dim}, {cfg: time_emb_dim}]}
-    """
-    if isinstance(value, list):
-        return [resolve_param(item, cfg) for item in value]
-
-    if not isinstance(value, dict):
-        return value
-
-    if set(value) == {"cfg"}:
-        key = value["cfg"]
-        if not isinstance(key, str) or not key:
-            raise DagConfigError("cfg parameter reference must be a non-empty string")
-        if not hasattr(cfg, key):
-            raise DagConfigError(f"Model config does not define attribute '{key}'")
-        return getattr(cfg, key)
-
-    if set(value) == {"add"}:
-        items = value["add"]
-        if not isinstance(items, list) or not items:
-            raise DagConfigError("add parameter expression requires a non-empty list")
-        return sum(resolve_param(item, cfg) for item in items)
-
-    return {key: resolve_param(item, cfg) for key, item in value.items()}
-
-
-def resolve_params(params: dict[str, Any], cfg: Any) -> dict[str, Any]:
-    return {name: resolve_param(value, cfg) for name, value in params.items()}
-
-
-def resolve_operation_params(
-    params: dict[str, Any],
-    runtime: dict[str, Any],
-) -> dict[str, Any]:
-    return resolve_params(params, require_cfg(runtime))
 
 
 def build_node(
