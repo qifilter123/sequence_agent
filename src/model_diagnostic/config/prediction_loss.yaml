@@ -1,0 +1,188 @@
+version: 1
+dag_id: prediction_loss
+
+# Source of truth for next-step prediction heads and the training objective.
+# This is a BUILD DAG: DagProcessor runs it once during model initialization.
+# The resulting torch.nn.Module executes directly in the PyTorch hot path.
+
+nodes:
+  # Prediction input is encoder output at t; targets are the next step t+1.
+  - id: nextstep_hidden
+    op: sequence_slice
+    inputs:
+      x: encoder_output
+    params:
+      dim: 1
+      start: 0
+      end: -1
+
+  - id: v_head
+    op: linear_transform
+    inputs:
+      x: nextstep_hidden
+    params:
+      output_dim: 1
+    cfg_params:
+      input_dim: hidden_dim
+
+  - id: v_pred
+    op: squeeze
+    inputs:
+      x: v_head
+    params:
+      dim: -1
+
+  - id: sw_head
+    op: linear_transform
+    inputs:
+      x: nextstep_hidden
+    cfg_params:
+      input_dim: hidden_dim
+      output_dim: sw_classes
+
+  - id: amt_head
+    op: linear_transform
+    inputs:
+      x: nextstep_hidden
+    params:
+      output_dim: 1
+    cfg_params:
+      input_dim: hidden_dim
+
+  - id: amt_pred
+    op: squeeze
+    inputs:
+      x: amt_head
+    params:
+      dim: -1
+
+  - id: is_new_head
+    op: linear_transform
+    inputs:
+      x: nextstep_hidden
+    cfg_params:
+      input_dim: hidden_dim
+      output_dim: is_new_classes
+
+  # Target/mask preparation formerly owned by compute_nextstep_recon_loss().
+  - id: nextstep_mask
+    op: next_step_pair_mask
+    inputs:
+      source: raw
+    params:
+      field: mask
+
+  - id: v_target
+    op: dict_field_slice
+    inputs:
+      source: raw
+    params:
+      field: dt_to_pre
+      dim: 1
+      start: 1
+
+  - id: amt_target
+    op: dict_field_slice
+    inputs:
+      source: raw
+    params:
+      field: amt_to_pre
+      dim: 1
+      start: 1
+
+  - id: sw_target
+    op: binary_fields_to_class
+    inputs:
+      source: raw
+    params:
+      fields: [sw_ip, sw_email, sw_fp, sw_bill, sw_ship]
+      weights: [16, 8, 4, 2, 1]
+      dim: 1
+      start: 1
+
+  - id: is_new_target
+    op: stack_dict_fields
+    inputs:
+      source: raw
+    params:
+      fields: [is_new_ip, is_new_email, is_new_fp, is_new_bill, is_new_ship]
+      slice_dim: 1
+      start: 1
+      stack_dim: -1
+
+  # Unweighted component losses, normalized by sum(mask) + 1e-6.
+  - id: loss_v
+    op: masked_smooth_l1_mean
+    inputs:
+      prediction: v_pred
+      target: v_target
+      mask: nextstep_mask
+    params:
+      epsilon: 1.0e-6
+
+  - id: loss_sw
+    op: masked_cross_entropy_mean
+    inputs:
+      logits: sw_head
+      target: sw_target
+      mask: nextstep_mask
+    params:
+      class_dim: -1
+      epsilon: 1.0e-6
+
+  - id: loss_amt
+    op: masked_smooth_l1_mean
+    inputs:
+      prediction: amt_pred
+      target: amt_target
+      mask: nextstep_mask
+    params:
+      epsilon: 1.0e-6
+
+  - id: loss_is_new
+    op: masked_multilabel_bce_mean
+    inputs:
+      logits: is_new_head
+      target: is_new_target
+      mask: nextstep_mask
+    params:
+      label_dim: -1
+      epsilon: 1.0e-6
+
+  - id: recon_loss
+    op: weighted_sum
+    inputs:
+      v: loss_v
+      sw: loss_sw
+      amt: loss_amt
+      is_new: loss_is_new
+    cfg_params:
+      v_weight: lambda_v
+      sw_weight: lambda_sw
+      amt_weight: lambda_amt
+      is_new_weight: lambda_is_new
+
+  - id: total_loss
+    op: scale
+    inputs:
+      x: recon_loss
+    cfg_params:
+      factor: lambda_recon
+
+  - id: model
+    op: root_model
+    inputs:
+      loss: total_loss
+      recon_loss: recon_loss
+      loss_v: loss_v
+      loss_sw: loss_sw
+      loss_amt: loss_amt
+      loss_is_new: loss_is_new
+      sw_ce: loss_sw
+      v_pred: v_pred
+      sw_logits: sw_head
+      amt_pred: amt_pred
+      is_new_logits: is_new_head
+
+outputs:
+  model: model

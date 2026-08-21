@@ -314,31 +314,6 @@ def build_root_model(inputs, params, runtime):
     )
 
 
-class NextStepPredictionHelper(nn.Module):
-    """Temporary prediction layer until prediction + loss move to their DAG."""
-
-    def __init__(
-        self,
-        hidden_dim: int,
-        sw_classes: int,
-        is_new_classes: int,
-    ) -> None:
-        super().__init__()
-        self.v_head = nn.Linear(hidden_dim, 1)
-        self.sw_head = nn.Linear(hidden_dim, sw_classes)
-        self.amt_head = nn.Linear(hidden_dim, 1)
-        self.is_new_head = nn.Linear(hidden_dim, is_new_classes)
-
-    def forward(self, encoder_output: torch.Tensor) -> dict[str, torch.Tensor]:
-        h_head = encoder_output[:, :-1, :]
-        return {
-            "v_pred": self.v_head(h_head).squeeze(-1),
-            "sw_logits": self.sw_head(h_head),
-            "amt_pred": self.amt_head(h_head).squeeze(-1),
-            "is_new_logits": self.is_new_head(h_head),
-        }
-
-
 def extract_last_embedding(
     encoder_output: torch.Tensor,
     mask: torch.Tensor,

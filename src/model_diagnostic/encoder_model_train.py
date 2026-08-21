@@ -7,9 +7,7 @@ import random
 
 import numpy as np
 import torch
-import torch.nn.functional as F
 
-from model_diagnostic import generic_feature_util as feature_util
 from model_diagnostic import generic_seq_generator as seq_gen
 from model_diagnostic import batch_util
 from model_diagnostic.cfg_base import CFG2
@@ -78,79 +76,6 @@ def build_full_features(batch, current_cfg, is_training=False):
     return transformed["model_input"], transformed["raw"]
 
 
-def compute_nextstep_recon_loss(preds, raw, current_cfg):
-
-    mask_src = raw["mask"][:, :-1]
-    mask_target = raw["mask"][:, 1:]
-    mask = mask_src * mask_target
-    valid_tokens = mask.sum() + 1e-6
-
-    v_target = raw["dt_to_pre"][:, 1:]
-    amt_target = raw["amt_to_pre"][:, 1:]
-
-    sw_joint = feature_util.combine_sw({
-        "sw_ip": raw["sw_ip"][:, 1:],
-        "sw_email": raw["sw_email"][:, 1:],
-        "sw_fp": raw["sw_fp"][:, 1:],
-        "sw_bill": raw["sw_bill"][:, 1:],
-        "sw_ship": raw["sw_ship"][:, 1:],
-    })
-
-    l_v = F.smooth_l1_loss(
-        preds["v_pred"],
-        v_target,
-        reduction="none",
-    ) * mask
-
-    l_amt = F.smooth_l1_loss(
-        preds["amt_pred"],
-        amt_target,
-        reduction="none",
-    ) * mask
-
-    l_sw_raw = F.cross_entropy(
-        preds["sw_logits"].transpose(1, 2),
-        sw_joint,
-        reduction="none",
-    )
-    #l_sw = feature_util.apply_sw_smooth_weight(l_sw_raw * mask, None)
-    l_sw = l_sw_raw * mask
-
-    is_new_tgt = feature_util.combine_is_new(raw)
-
-    l_is_new_raw = F.binary_cross_entropy_with_logits(
-        preds["is_new_logits"],
-        is_new_tgt,
-        reduction="none",
-    )
-    l_is_new = l_is_new_raw.sum(dim=-1) * mask
-
-    # Unweighted component losses.
-    loss_v = l_v.sum() / valid_tokens
-    loss_sw = l_sw.sum() / valid_tokens
-    loss_amt = l_amt.sum() / valid_tokens
-    loss_is_new = l_is_new.sum() / valid_tokens
-
-    total = (
-        current_cfg.lambda_v * loss_v
-        + current_cfg.lambda_sw * loss_sw
-        + current_cfg.lambda_amt * loss_amt
-        + current_cfg.lambda_is_new * loss_is_new
-    )
-
-    sw_ce = ((l_sw_raw * mask).sum() / valid_tokens).item()
-
-    loss_components = {
-        "v": loss_v.item(),
-        "sw": loss_sw.item(),
-        "amt": loss_amt.item(),
-        "is_new": loss_is_new.item(),
-        "sw_ce": sw_ce,
-    }
-
-    return total, loss_components
-
-
 def build_txn_index(data) -> Dict[int, List[int]]:
     cid = data["trx_id"].numpy()
     groups: Dict[int, List[int]] = {}
@@ -211,19 +136,17 @@ def build_diagnostic_probe(
             },
         })
 
-    # Temporary prediction helper remains outside model_structure.yaml, but it
-    # still participates in optimization/diagnostics until the next DAG lands.
-    prediction_helper = getattr(current_model, "prediction_helper", None)
-    if prediction_helper is not None:
-        for head_name, module in prediction_helper.named_children():
-            stage = f"prediction.{head_name}"
+    prediction_loss = getattr(current_model, "prediction_loss", None)
+    if prediction_loss is not None:
+        for node_id, module in iter_trainable_model_nodes(prediction_loss):
+            stage = f"prediction.{node_id}"
             probe.register_stage(
                 stage,
                 module,
                 config=_stage_probe_config(),
             )
             runtime_modules.append({
-                "module_path": f"prediction_helper.{head_name}",
+                "module_path": f"prediction_loss.model_nodes.{node_id}",
                 "class_name": type(module).__name__,
                 "diagnostics": {
                     "enabled": True,
@@ -311,15 +234,13 @@ def train_internal(
             )
 
             fwd_out = current_model(x_full)
-            predicts = current_model.prediction_helper(fwd_out)
-
-            l_recon, loss_components = compute_nextstep_recon_loss(
-                predicts,
-                raw,
-                current_cfg,
+            loss_out = current_model.prediction_loss(
+                encoder_output=fwd_out,
+                raw=raw,
             )
 
-            loss = current_cfg.lambda_recon * l_recon
+            loss = loss_out["loss"]
+            l_recon = loss_out["recon_loss"]
 
             if probe is not None:
                 probe.store_many(
@@ -327,11 +248,11 @@ def train_internal(
                     {
                         "loss.total": loss.item(),
                         "loss.recon": l_recon.item(),
-                        "loss.v": loss_components["v"],
-                        "loss.sw": loss_components["sw"],
-                        "loss.amt": loss_components["amt"],
-                        "loss.is_new": loss_components["is_new"],
-                        "loss.sw_ce": loss_components["sw_ce"],
+                        "loss.v": loss_out["loss_v"].item(),
+                        "loss.sw": loss_out["loss_sw"].item(),
+                        "loss.amt": loss_out["loss_amt"].item(),
+                        "loss.is_new": loss_out["loss_is_new"].item(),
+                        "loss.sw_ce": loss_out["sw_ce"].item(),
                         "optimizer.lr": opt.param_groups[0]["lr"],
                     },
                 )
@@ -371,11 +292,11 @@ def train_internal(
                 print(
                     f"Step {step:04d} | Loss {loss.item():.4f} "
                     f"(Recon {l_recon.item():.4f} "
-                    f"| V {loss_components['v']:.4f} "
-                    f"| SW {loss_components['sw']:.4f} "
-                    f"| AMT {loss_components['amt']:.4f} "
-                    f"| NEW {loss_components['is_new']:.4f} "
-                    f"| SW_CE {loss_components['sw_ce']:.4f})"
+                    f"| V {loss_out['loss_v'].item():.4f} "
+                    f"| SW {loss_out['loss_sw'].item():.4f} "
+                    f"| AMT {loss_out['loss_amt'].item():.4f} "
+                    f"| NEW {loss_out['loss_is_new'].item():.4f} "
+                    f"| SW_CE {loss_out['sw_ce'].item():.4f})"
                 )
 
     return current_model
@@ -401,47 +322,83 @@ def train(
 
 
 def init_model(current_cfg):
-    """Build the encoder from model_structure.yaml using the generic DAG engine."""
+    """Build encoder + prediction/loss modules from their BUILD DAGs."""
     from model_diagnostic.dag.dag_processor import DagProcessor
     from model_diagnostic.dag.model_builder_registry import (
         MODEL_BUILDER_REGISTRY,
         symbolic_input,
     )
-    from model_diagnostic.dag_model_ops import NextStepPredictionHelper
 
-    config_path = (
-        Path(__file__).resolve().parent
-        / "config"
-        / "model_structure.yaml"
-    )
+    # Import modules for their operation registrations. DagProcessor remains
+    # generic and knows nothing about model or prediction/loss semantics.
+    from model_diagnostic import dag_model_ops as _dag_model_ops
+    from model_diagnostic import dag_prediction_loss_ops as _dag_prediction_loss_ops
+    del _dag_model_ops, _dag_prediction_loss_ops
+
+    config_dir = Path(__file__).resolve().parent / "config"
+    model_config_path = config_dir / "model_structure.yaml"
+    prediction_loss_config_path = config_dir / "prediction_loss.yaml"
 
     processor = DagProcessor(MODEL_BUILDER_REGISTRY)
-    model_cfg = processor.load_config(config_path)
 
+    model_cfg = processor.load_config(model_config_path)
     model = processor.run(
         model_cfg,
         inputs={"x_full": symbolic_input("x_full")},
         runtime={"cfg": current_cfg},
     )["model"]
 
-    model.prediction_helper = NextStepPredictionHelper(
-        hidden_dim=current_cfg.hidden_dim,
-        sw_classes=current_cfg.sw_classes,
-        is_new_classes=current_cfg.is_new_classes,
-    )
+    prediction_loss_cfg = processor.load_config(prediction_loss_config_path)
+    prediction_loss = processor.run(
+        prediction_loss_cfg,
+        inputs={
+            "encoder_output": symbolic_input("encoder_output"),
+            "raw": symbolic_input("raw"),
+        },
+        runtime={"cfg": current_cfg},
+    )["model"]
 
-    model.model_structure_path = str(config_path)
+    # Register as a child module so optimizer parameters, train/eval mode,
+    # device moves, and state_dict all include prediction heads automatically.
+    model.prediction_loss = prediction_loss
+    model.model_structure_path = str(model_config_path)
+    model.prediction_loss_path = str(prediction_loss_config_path)
 
     return model.to(current_cfg.device)
 
+def _migrate_legacy_prediction_checkpoint_keys(state_dict):
+    """Remap the transitional prediction_helper head keys to the DAG layout.
+
+    The migration is intentionally load-only. New checkpoints are always saved
+    with the prediction_loss.model_nodes.* structure.
+    """
+    migrated = False
+    for head_name in ("v_head", "sw_head", "amt_head", "is_new_head"):
+        for suffix in ("weight", "bias"):
+            old_key = f"prediction_helper.{head_name}.{suffix}"
+            new_key = f"prediction_loss.model_nodes.{head_name}.{suffix}"
+            if old_key not in state_dict:
+                continue
+            if new_key in state_dict:
+                raise RuntimeError(
+                    "Checkpoint contains both legacy and DAG prediction-head keys: "
+                    f"{old_key!r} and {new_key!r}"
+                )
+            state_dict[new_key] = state_dict.pop(old_key)
+            migrated = True
+    return migrated
+
+
 def load_trained_model(current_cfg):
     model = init_model(current_cfg)
-    model.load_state_dict(
-        torch.load(
-            current_cfg.model_path,
-            map_location=current_cfg.device,
-        )
+    state_dict = torch.load(
+        current_cfg.model_path,
+        map_location=current_cfg.device,
     )
+    migrated = _migrate_legacy_prediction_checkpoint_keys(state_dict)
+    model.load_state_dict(state_dict)
+    if migrated:
+        print("Migrated legacy prediction_helper checkpoint keys to prediction_loss DAG keys")
     model.eval()
     print(
         "Loaded DAG-built Seq-on-Graph model "
