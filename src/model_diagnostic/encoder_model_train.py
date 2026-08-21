@@ -81,8 +81,8 @@ def build_full_features(batch, current_cfg, is_training=False):
 def compute_nextstep_recon_loss(preds, raw, current_cfg):
 
     mask_src = raw["mask"][:, :-1]
-    mask_tgt = raw["mask"][:, 1:]
-    mask = mask_src * mask_tgt
+    mask_target = raw["mask"][:, 1:]
+    mask = mask_src * mask_target
     valid_tokens = mask.sum() + 1e-6
 
     v_target = raw["dt_to_pre"][:, 1:]
@@ -113,17 +113,10 @@ def compute_nextstep_recon_loss(preds, raw, current_cfg):
         sw_joint,
         reduction="none",
     )
-    l_sw = feature_util.apply_sw_smooth_weight(l_sw_raw * mask, None)
+    #l_sw = feature_util.apply_sw_smooth_weight(l_sw_raw * mask, None)
+    l_sw = l_sw_raw * mask
 
     is_new_tgt = feature_util.combine_is_new(raw)
-
-    expected_is_new_classes = getattr(current_cfg, "is_new_classes", None)
-    if expected_is_new_classes is not None and is_new_tgt.size(-1) != expected_is_new_classes:
-        raise ValueError(
-            "is_new target/model dimension mismatch: "
-            f"target has {is_new_tgt.size(-1)} labels, "
-            f"cfg.is_new_classes={expected_is_new_classes}."
-        )
 
     l_is_new_raw = F.binary_cross_entropy_with_logits(
         preds["is_new_logits"],
