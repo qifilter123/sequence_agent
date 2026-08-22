@@ -1,0 +1,89 @@
+# Framework contract:
+#   inputs     = DAG/external data dependencies
+#   params     = literal algorithm semantics
+#   cfg_params = HBSCAN4Config bindings resolved from runtime['cfg']
+#   runtime    = runtime['model'] + runtime['model_cfg'] + runtime['cfg']
+version: 1
+dag_id: hdbscan_evaluation
+
+nodes:
+  # Generate evaluation anchored records using the same sequence-positioning semantics
+  # as centroid construction. Realtime interest in the last step is expressed by pooling,
+  # not by changing sequence generation for this DAG.
+  - id: evaluation_dataset
+    op: generate_anchored_dataset
+    inputs: {}
+    cfg_params:
+      num_trx: eval_num_trx
+
+  # Encode every anchored record and take the final valid sequence embedding.
+  - id: evaluation_embeddings
+    op: extract_record_embeddings
+    inputs:
+      dataset: evaluation_dataset
+    params:
+      pooling: last_seq_embedding
+      normalization: l2
+    cfg_params:
+      batch_size: embed_batch
+
+  # Build the gated view used by fraud-centroid alignment while retaining X_all.
+  # X_all = all records, no len gate, and is intentionally used by centroid-spread scoring.
+  - id: gated_evaluation_records
+    op: apply_record_length_gate
+    inputs:
+      embeddings: evaluation_embeddings
+    cfg_params:
+      min_len_gate: min_len_gate
+
+  # Select label-aware FRAUD centroids that meet the minimum purity requirement.
+  # This is evaluation/interpretation logic, not part of HDBSCAN cluster formation.
+  - id: fraud_centroids
+    op: select_fraud_centroids
+    inputs:
+      clusters: clusters
+    cfg_params:
+      min_centroid_purity: min_centroid_purity
+
+  # Measure whether any gated record of a transaction falls inside a FRAUD centroid radius.
+  # The current transaction-level aggregation contract is ANY record aligned => aligned.
+  - id: centroid_alignment
+    op: fraud_centroid_alignment
+    inputs:
+      records: gated_evaluation_records
+      fraud_centroids: fraud_centroids
+    params:
+      transaction_aggregation: any
+
+  # Assign every X_all record to the nearest centroid from the centroid-build DAG.
+  - id: nearest_centroid
+    op: nearest_centroid_assignment
+    inputs:
+      records: gated_evaluation_records
+      clusters: clusters
+
+  # Score each transaction by the maximum pairwise distance among its assigned centroids.
+  - id: centroid_spread
+    op: transaction_centroid_spread
+    inputs:
+      records: gated_evaluation_records
+      assignment: nearest_centroid
+    params:
+      aggregation: max_pairwise_distance
+
+  # Evaluation-only threshold calibration and metrics. best_f1 is not a production threshold;
+  # it is selected from labels on the current evaluation population to measure effectiveness.
+  - id: evaluation_metrics
+    op: binary_score_metrics
+    inputs:
+      records: gated_evaluation_records
+      spread_result: centroid_spread
+    params:
+      threshold_strategy: best_f1
+
+outputs:
+  record_embeddings: gated_evaluation_records
+  alignment: centroid_alignment
+  nearest_centroid: nearest_centroid
+  centroid_spread: centroid_spread
+  evaluation_metrics: evaluation_metrics

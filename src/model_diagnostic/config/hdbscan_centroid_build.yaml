@@ -1,0 +1,84 @@
+# Framework contract:
+#   inputs     = DAG/external data dependencies
+#   params     = literal algorithm semantics
+#   cfg_params = HBSCAN4Config bindings resolved from runtime['cfg']
+#   runtime    = runtime['model'] + runtime['model_cfg'] + runtime['cfg']
+version: 1
+dag_id: hdbscan_centroid_build
+
+nodes:
+  # Generate the anchored record population used to form the clustering geometry.
+  # Centroid build and evaluation intentionally use the same sequence-positioning semantics;
+  # no HDBSCAN-specific is_training flag is passed to the sequence generator.
+  - id: anchored_dataset
+    op: generate_anchored_dataset
+    inputs: {}
+    cfg_params:
+      num_trx: eval_num_trx
+
+  # Run the trained encoder in inference mode and extract one vector per anchored record.
+  # last_seq_embedding means the encoder state at the last valid sequence step.
+  - id: record_embeddings
+    op: extract_record_embeddings
+    inputs:
+      dataset: anchored_dataset
+    params:
+      pooling: last_seq_embedding
+      normalization: l2
+    cfg_params:
+      batch_size: embed_batch
+
+  # Apply the minimum valid-length gate only to records used by HDBSCAN fitting.
+  # X     = records after the length gate, used to build clusters/centroids.
+  # X_all = all records, no len gate; it is preserved for downstream centroid-spread scoring.
+  - id: gated_records
+    op: apply_record_length_gate
+    inputs:
+      embeddings: record_embeddings
+    cfg_params:
+      min_len_gate: min_len_gate
+
+  # Label-free density clustering. This node sees embedding geometry but no fraud labels.
+  - id: hdbscan_clusters
+    op: hdbscan_fit
+    inputs:
+      records: gated_records
+    cfg_params:
+      min_cluster_size: min_cluster_size
+      min_samples: min_samples
+      cluster_selection_epsilon: cluster_selection_epsilon
+      cluster_selection_method: cluster_selection_method
+      metric: metric
+
+  # Convert HDBSCAN memberships into centroids and empirical alignment radii.
+  # This remains geometry-only; fraud labels are still not used.
+  - id: cluster_geometry
+    op: build_cluster_geometry
+    inputs:
+      records: gated_records
+      clustering: hdbscan_clusters
+    cfg_params:
+      align_distance_percentile: align_distance_percentile
+
+  # Label-aware evaluation annotation: tag already-formed clusters as FRAUD/NORMAL and
+  # attach purity/semantic diagnostics. A future cluster-review Agent can replace this node.
+  - id: annotated_clusters
+    op: annotate_clusters
+    inputs:
+      geometry: cluster_geometry
+      records: gated_records
+    cfg_params:
+      fraud_purity_threshold: fraud_purity_threshold
+
+  # Summarize HDBSCAN noise separately. n_anomaly is diagnostic/evaluation information;
+  # it does not participate in the label-free clustering fit.
+  - id: noise_diagnostics
+    op: build_noise_diagnostics
+    inputs:
+      records: gated_records
+      clustering: hdbscan_clusters
+
+outputs:
+  clusters: annotated_clusters
+  noise_info: noise_diagnostics
+  record_embeddings: gated_records

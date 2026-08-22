@@ -200,3 +200,33 @@ class CFG2(CFG):
             result[name] = getattr(cfg, name)
 
         return dict(sorted(result.items()))
+
+
+@dataclass
+class HBSCAN4Config:
+    eval_num_trx: int = 3000
+    embed_batch: int = 512
+    min_cluster_size: int = 10
+    min_samples: int = 10
+    cluster_selection_epsilon: float = 0.0
+    cluster_selection_method: str = "leaf"
+    metric: str = "euclidean"
+
+    # Retained for backward-compatible experiment config serialization.
+    # They are intentionally not wired into the current executable DAG yet.
+    use_density: bool = False
+    density_lambda: float = 0.0
+
+    fraud_purity_threshold: float = 0.5
+    min_centroid_purity: float = 0.5
+    align_distance_percentile: float = 95.0
+
+    # Retained but intentionally not wired into the current scorer yet.
+    gray_zone_alpha: float = 1.5
+    hard_distance_cap: float = 1.0
+
+    min_len_gate: int = 1
+    seed: int = 42
+
+    # Reporting/debug-only compatibility parameter; not part of the DAG algorithm.
+    show_n_samples: int = 3
