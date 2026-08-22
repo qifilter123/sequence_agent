@@ -13,7 +13,7 @@ except ImportError as exc:  # pragma: no cover - depends on deployment environme
         "Install it with: pip install 'mcp>=2,<3'"
     ) from exc
 
-from .diagnostic_runtime import DiagnosticRuntime
+from model_diagnostic.diagnostic.diagnostic_runtime import DiagnosticRuntime
 
 
 runtime = DiagnosticRuntime.from_environment()

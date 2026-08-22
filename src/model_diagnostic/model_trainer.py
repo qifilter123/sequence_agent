@@ -12,8 +12,8 @@ from model_diagnostic import generic_seq_generator as seq_gen
 from model_diagnostic import batch_util
 from model_diagnostic.cfg_base import CFG2
 
-from model_diagnostic.diagnostic_probe_manager import DiagnosticProbeManager, StageProbeConfig
-from model_diagnostic.diagnostic_registry import DIAGNOSTICS
+from model_diagnostic.diagnostic.diagnostic_probe_manager import DiagnosticProbeManager, StageProbeConfig
+from model_diagnostic.diagnostic.diagnostic_registry import DIAGNOSTICS
 
 
 _FEATURE_DAG_RUNTIME = None
@@ -36,7 +36,7 @@ def _get_feature_dag_runtime():
     global _FEATURE_DAG_RUNTIME
     if _FEATURE_DAG_RUNTIME is None:
         from model_diagnostic.dag.dag_processor import DagProcessor
-        from model_diagnostic.dag_feature_ops import FEATURE_DAG_REGISTRY
+        from model_diagnostic.dag_ops.dag_feature_ops import FEATURE_DAG_REGISTRY
 
         processor = DagProcessor(FEATURE_DAG_REGISTRY)
         config_dir = Path(__file__).resolve().parent / "config"
@@ -331,8 +331,8 @@ def init_model(current_cfg):
 
     # Import modules for their operation registrations. DagProcessor remains
     # generic and knows nothing about model or prediction/loss semantics.
-    from model_diagnostic import dag_model_ops as _dag_model_ops
-    from model_diagnostic import dag_prediction_loss_ops as _dag_prediction_loss_ops
+    from model_diagnostic.dag_ops import dag_model_ops as _dag_model_ops
+    from model_diagnostic.dag_ops import dag_prediction_loss_ops as _dag_prediction_loss_ops
     del _dag_model_ops, _dag_prediction_loss_ops
 
     config_dir = Path(__file__).resolve().parent / "config"

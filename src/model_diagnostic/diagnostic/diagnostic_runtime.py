@@ -15,14 +15,14 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional
 import numpy as np
 import torch
 
-from . import batch_util
-from . import encoder_model_train as train_driver
-from . import encoder_eval_hbscan as hdbscan_eval
-from . import generic_seq_generator as seq_gen
-from .cfg_base import CFG2
-from .diagnostic_registry import DiagnosticRegistry
-from .diagnostic_model_structure import render_model_structure
-from .diagnostic_probe_manager import DiagnosticProbeManager
+from model_diagnostic import batch_util
+from model_diagnostic import model_trainer as train_driver
+from model_diagnostic import inference_hbscan as hdbscan_eval
+from model_diagnostic import generic_seq_generator as seq_gen
+from model_diagnostic.cfg_base import CFG2
+from model_diagnostic.diagnostic.diagnostic_registry import DiagnosticRegistry
+from model_diagnostic.diagnostic.diagnostic_model_structure import render_model_structure
+from model_diagnostic.diagnostic.diagnostic_probe_manager import DiagnosticProbeManager
 
 class DiagnosticRuntimeError(RuntimeError):
     """Raised when a diagnostic runtime operation is not valid for its state."""

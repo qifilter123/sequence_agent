@@ -9,8 +9,8 @@ src/model_diagnostic/diagnostic_model_structure.py
 src/model_diagnostic/diagnostic_probe_manager.py
 src/model_diagnostic/diagnostic_registry.py
 src/model_diagnostic/diagnostic_runtime.py
-src/model_diagnostic/encoder_eval_hbscan.py
-src/model_diagnostic/encoder_model_train.py
+src/model_diagnostic/inference_hbscan.py
+src/model_diagnostic/model_trainer.py
 src/model_diagnostic/encoder_model_train_orig.py
 src/model_diagnostic/generic_feature_util.py
 src/model_diagnostic/generic_model.py

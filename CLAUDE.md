@@ -123,7 +123,7 @@ Do not modify source code.
 
 The primary implementation areas are:
 
-### `encoder_model_train.py`
+### `model_trainer.py`
 
 - feature construction
 - training loop
@@ -153,7 +153,7 @@ The primary implementation areas are:
 - fixed `CFG`
 - experiment-tunable `CFG2`
 
-### `encoder_eval_hbscan.py`
+### `inference_hbscan.py`
 
 - downstream embedding extraction
 - HDBSCAN centroid construction

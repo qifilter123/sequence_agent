@@ -9,7 +9,7 @@ from typing import Any, Dict, Iterator, Mapping, Optional, Protocol, Union
 import torch
 import torch.nn as nn
 
-from .diagnostic_model_structure import render_model_structure
+from model_diagnostic.diagnostic.diagnostic_model_structure import render_model_structure
 
 
 class DiagnosticRegistryLike(Protocol):

@@ -17,10 +17,11 @@ import torch
 from model_diagnostic.cfg_base import CFG2
 from model_diagnostic.dag.dag_processor import DagProcessor
 from model_diagnostic.dag.hdbscan_registry import HDBSCAN_DAG_REGISTRY
-from model_diagnostic.encoder_model_train import load_trained_model, set_seed
+from model_diagnostic.model_trainer import load_trained_model, set_seed
+from model_diagnostic import hbscan_report_helper
 from model_diagnostic.cfg_base import HBSCAN4Config
-# Import for registration side effects. DagProcessor and OperationRegistry stay generic.
-from model_diagnostic import dag_hdbscan_ops as _dag_hdbscan_ops
+
+from model_diagnostic.dag_ops import dag_hdbscan_ops as _dag_hdbscan_ops # Must keep, registering ops into registry.
 
 _HDBSCAN_DAG_RUNTIME = None
 
@@ -141,43 +142,6 @@ def run_hdbscan_v4(
         runtime,
     )
     return clusters, noise_info
-
-
-def report_clusters(clusters: List[Dict[str, Any]], noise_info: Dict[str, Any]) -> None:
-    print("\n--- Cluster diagnostics ---")
-    print(f"{'lbl':>4s} {'size':>5s} {'p_fraud':>7s} {'assign':>6s} "
-          f"{'semantic_type':>18s} {'maxAln':>6s} {'medAln':>6s} {'anchor':>10s}  dominant scenarios")
-    for c in sorted(clusters, key=lambda x: (-x["p_fraud"], -x["size"])):
-        dom = ", ".join(f"{s}:{n}" for s, n in c["dominant_scenarios"])
-        st = c.get("semantic_type", "NORMAL_BASELINE")
-        anc = c.get("anchor_dominant", "?")
-        print(f"{c['label']:4d} {c['size']:5d} {c['p_fraud']:7.3f} {c['assigned']:>6s} "
-              f"{st:>18s} {c['max_align_distance']:6.3f} {c['median_align_distance']:6.3f} {anc:>10s}  {dom}")
-    if clusters:
-        purities = [c["anchor_purity"] for c in clusters]
-        n_pure = sum(1 for p in purities if p >= 0.9)
-        print(f"\n  [anchor-purity diag] {n_pure}/{len(clusters)} clusters are >=90% single-anchor "
-              f"| mean anchor purity {np.mean(purities):.1%} "
-              f"| min {min(purities):.1%} max {max(purities):.1%}")
-        for c in sorted(clusters, key=lambda x: -x["anchor_purity"]):
-            mix = ", ".join(f"{a}:{n}" for a, n in c["anchor_mix"])
-            print(f"    c{c['label']:02d} anchor_purity={c['anchor_purity']:.0%}  mix=[{mix}]")
-    top = ", ".join(f"{s}:{n}" for s, n in noise_info["top_scenarios"])
-    print(f"noise: {noise_info['count']} pts  "
-          f"(anomaly {noise_info['n_anomaly']})  top: {top}")
-
-    benign = [
-        c for c in clusters
-        if c.get("semantic_type", "").startswith("NORMAL_")
-        and c["semantic_type"] != "NORMAL_BASELINE"
-    ]
-    if benign:
-        print(f"\n  [LLM hint] Auto-identified benign clusters ({len(benign)}):")
-        for c in sorted(benign, key=lambda x: x["semantic_type"]):
-            top_sc = c["dominant_scenarios"][0] if c["dominant_scenarios"] else ("?", 0)
-            print(f"    label={c['label']:2d}  {c['semantic_type']:<20s}  "
-                  f"size={c['size']}  purity={top_sc[1] / max(1, c['size']):.0%}  "
-                  f"top={top_sc[0]}:{top_sc[1]}")
 
 
 def evaluate_v4(
@@ -384,7 +348,6 @@ def evaluate_on_clusters(
         "alignment": result["alignment"],
     }
 
-    from model_diagnostic import hbscan_report_helper
     hbscan_report_helper.report_alignment(result["alignment"], hcfg)
     hbscan_report_helper.report_centroid_spread(spread_info)
 
@@ -452,7 +415,7 @@ def run_hdbscan_evaluation(
         model.eval()
 
         clusters, noise_info = build_hdbscan_centroids(model, cfg, hcfg)
-        report_clusters(clusters, noise_info)
+        hbscan_report_helper.report_clusters(clusters, noise_info)
         if not clusters:
             raise RuntimeError("HDBSCAN produced no non-noise clusters")
 
@@ -503,7 +466,7 @@ def main():
     model = load_trained_model(cfg)
 
     clusters, noise_info = build_hdbscan_centroids(model, cfg, hcfg)
-    report_clusters(clusters, noise_info)
+    hbscan_report_helper.report_clusters(clusters, noise_info)
     evaluate_on_clusters(model, cfg, hcfg, clusters)
 
 

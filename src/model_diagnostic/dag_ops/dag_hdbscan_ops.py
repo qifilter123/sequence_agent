@@ -12,7 +12,7 @@ from sklearn.metrics import average_precision_score, precision_recall_curve, roc
 from model_diagnostic import generic_seq_generator as seq_gen
 from model_diagnostic.batch_util import _META_KEYS
 from model_diagnostic.dag.hdbscan_registry import HDBSCAN_DAG_REGISTRY
-from model_diagnostic.encoder_model_train import build_full_features
+from model_diagnostic.model_trainer import build_full_features
 
 
 _BENIGN_SEMANTIC_MAP = {
