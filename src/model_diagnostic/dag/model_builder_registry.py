@@ -12,6 +12,9 @@ from model_diagnostic.dag.operation_registry import OperationRegistry
 MODEL_BUILDER_REGISTRY = OperationRegistry()
 
 
+BUILDER_FIELDS_KEY = "fields"
+
+
 @dataclass(frozen=True)
 class ModelInput:
     """Symbolic external input used while the model-builder DAG is running."""
@@ -89,6 +92,38 @@ def require_node_id(runtime: dict[str, Any]) -> str:
     return node_id
 
 
+def _validate_builder_inputs(
+    inputs: dict[str, Any],
+    *,
+    node_id: str,
+) -> None:
+    """Validate the Builder-DAG input calling contract.
+
+    ``inputs.fields`` is reserved by the Builder DAG layer. When present it
+    must be the only input key and must contain a non-empty ordered list. The
+    compiled PyTorch runtime expands that list as positional arguments.
+
+    A mapping without ``fields`` is a semantic keyword-binding contract and is
+    passed to the downstream module as ``module(**inputs)``.
+    """
+    if BUILDER_FIELDS_KEY not in inputs:
+        return
+
+    if set(inputs) != {BUILDER_FIELDS_KEY}:
+        other = sorted(set(inputs) - {BUILDER_FIELDS_KEY})
+        raise DagConfigError(
+            f"Builder DAG node '{node_id}' cannot mix reserved input 'fields' "
+            f"with named inputs: {', '.join(other)}"
+        )
+
+    fields = inputs[BUILDER_FIELDS_KEY]
+    if not isinstance(fields, list) or not fields:
+        raise DagConfigError(
+            f"Builder DAG node '{node_id}' reserved input 'fields' must be "
+            "a non-empty ordered list"
+        )
+
+
 def build_node(
     *,
     op_name: str,
@@ -99,8 +134,12 @@ def build_node(
 ) -> BuiltModelNode:
     if not isinstance(module, nn.Module):
         raise TypeError(f"Model builder op '{op_name}' must construct nn.Module")
+
+    node_id = require_node_id(runtime)
+    _validate_builder_inputs(inputs, node_id=node_id)
+
     return BuiltModelNode(
-        node_id=require_node_id(runtime),
+        node_id=node_id,
         op_name=op_name,
         module=module,
         inputs=dict(inputs),
@@ -174,6 +213,11 @@ def compile_model_graph(root_inputs: dict[str, Any]) -> CompiledModelGraph:
             raise DagConfigError(
                 f"Cycle detected while assembling model at node '{node.node_id}'"
             )
+
+        # Validate again at graph-compile boundary so custom builder operations
+        # that construct BuiltModelNode directly cannot bypass the contract.
+        _validate_builder_inputs(node.inputs, node_id=node.node_id)
+
         visiting.add(node.node_id)
         for dependency in _iter_dependencies(node.inputs):
             visit(dependency)

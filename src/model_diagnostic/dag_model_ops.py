@@ -8,6 +8,7 @@ import torch.nn as nn
 
 from model_diagnostic.dag.dag_processor import DagConfigError
 from model_diagnostic.dag.model_builder_registry import (
+    BUILDER_FIELDS_KEY,
     MODEL_BUILDER_REGISTRY,
     ModelExecutionNode,
     ModelInputRef,
@@ -66,10 +67,10 @@ class TensorConcat(nn.Module):
         super().__init__()
         self.dim = int(dim)
 
-    def forward(self, tensors: list[torch.Tensor]) -> torch.Tensor:
-        if not isinstance(tensors, list) or not tensors:
-            raise ValueError("concat requires a non-empty tensor list")
-        return torch.cat(tensors, dim=self.dim)
+    def forward(self, *fields: torch.Tensor) -> torch.Tensor:
+        if not fields:
+            raise ValueError("concat requires at least one tensor field")
+        return torch.cat(fields, dim=self.dim)
 
 
 class ResidualAdd(nn.Module):
@@ -134,10 +135,26 @@ class DagTorchModel(nn.Module):
         for node in self._execution_plan:
             resolved = _resolve_runtime_refs(node.inputs, values)
             module = self.model_nodes[node.node_id]
-            if len(resolved) == 1:
-                node_output = module(next(iter(resolved.values())))
+
+            if BUILDER_FIELDS_KEY in resolved:
+                # Builder-DAG reserved contract:
+                # inputs.fields is an ordered list expanded positionally.
+                if set(resolved) != {BUILDER_FIELDS_KEY}:
+                    raise RuntimeError(
+                        f"Compiled builder node '{node.node_id}' mixes reserved "
+                        "input 'fields' with named inputs"
+                    )
+                fields = resolved[BUILDER_FIELDS_KEY]
+                if not isinstance(fields, list) or not fields:
+                    raise RuntimeError(
+                        f"Compiled builder node '{node.node_id}' reserved input "
+                        "'fields' must be a non-empty ordered list"
+                    )
+                node_output = module(*fields)
             else:
+                # Named builder inputs are semantic keyword bindings.
                 node_output = module(**resolved)
+
             values[node.node_id] = node_output
 
         return _resolve_runtime_refs(self._output_ref, values)
@@ -297,11 +314,17 @@ def build_root_model(inputs, params, runtime):
     """Compile the symbolic graph into the final executable nn.Module.
 
     root_model is a normal registered DAG node. It adds no model computation.
-    Its flat input mapping names the exposed model output(s).
+    Its flat input mapping names the exposed model output(s), so it intentionally
+    uses named inputs rather than the Builder-DAG reserved ``fields`` form.
     """
     if params:
         raise DagConfigError(
             "root_model does not accept params; its contract is derived from DAG inputs"
+        )
+    if BUILDER_FIELDS_KEY in inputs:
+        raise DagConfigError(
+            "root_model cannot use reserved input 'fields'; root input keys define "
+            "the exposed model output names"
         )
 
     compiled = compile_model_graph(inputs)

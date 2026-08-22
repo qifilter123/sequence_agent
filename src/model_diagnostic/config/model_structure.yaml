@@ -6,16 +6,16 @@ dag_id: model_structure
 # Its root node outputs an executable torch.nn.Module. During training/inference,
 # PyTorch calls that module's forward(); DagProcessor is not on the hot path.
 #
-# Prediction heads and loss are intentionally NOT part of this DAG. The trainer
-# temporarily attaches the legacy prediction helper until prediction + loss are
-# migrated into their own DAG.
+# Prediction heads and loss are intentionally NOT part of this DAG.
+# They are defined separately in prediction_loss.yaml.
 
 nodes:
   # x_full -> t_emb
   - id: temporal_embedding
     op: temporal_embedding
     inputs:
-      x: x_full
+      fields:
+        - x_full
     params:
       source_index: 0
     cfg_params:
@@ -25,7 +25,7 @@ nodes:
   - id: x_with_time
     op: concat
     inputs:
-      tensors:
+      fields:
         - x_full
         - temporal_embedding
     params:
@@ -42,7 +42,8 @@ nodes:
   - id: feature_corr_linear_1
     op: linear_transform
     inputs:
-      x: x_with_time
+      fields:
+        - x_with_time
     params:
       output_dim: 32
     derived_params:
@@ -51,21 +52,24 @@ nodes:
   - id: feature_corr_activation_1
     op: activation
     inputs:
-      x: feature_corr_linear_1
+      fields:
+        - feature_corr_linear_1
     params:
       activation_name: relu
 
   - id: feature_corr_dropout
     op: dropout
     inputs:
-      x: feature_corr_activation_1
+      fields:
+        - feature_corr_activation_1
     cfg_params:
       dropout_rate: dropout
 
   - id: feature_corr_linear_2
     op: linear_transform
     inputs:
-      x: feature_corr_dropout
+      fields:
+        - feature_corr_dropout
     params:
       input_dim: 32
     cfg_params:
@@ -74,7 +78,8 @@ nodes:
   - id: sw_combo
     op: activation
     inputs:
-      x: feature_corr_linear_2
+      fields:
+        - feature_corr_linear_2
     params:
       activation_name: relu
 
@@ -82,7 +87,7 @@ nodes:
   - id: fwd_input
     op: concat
     inputs:
-      tensors:
+      fields:
         - x_full
         - temporal_embedding
         - sw_combo
@@ -102,7 +107,8 @@ nodes:
   - id: fwd_gru_0
     op: GRU
     inputs:
-      x: fwd_input
+      fields:
+        - fwd_input
     params:
       batch_first: true
     cfg_params:
@@ -113,14 +119,16 @@ nodes:
   - id: fwd_norm_0
     op: LayerNorm
     inputs:
-      x: fwd_gru_0
+      fields:
+        - fwd_gru_0
     cfg_params:
       normalized_shape: hidden_dim
 
   - id: fwd_dropout_0
     op: dropout
     inputs:
-      x: fwd_norm_0
+      fields:
+        - fwd_norm_0
     cfg_params:
       dropout_rate: dropout
 
@@ -128,7 +136,8 @@ nodes:
   - id: fwd_gru_1
     op: GRU
     inputs:
-      x: fwd_dropout_0
+      fields:
+        - fwd_dropout_0
     params:
       batch_first: true
     cfg_params:
@@ -138,14 +147,16 @@ nodes:
   - id: fwd_norm_1
     op: LayerNorm
     inputs:
-      x: fwd_gru_1
+      fields:
+        - fwd_gru_1
     cfg_params:
       normalized_shape: hidden_dim
 
   - id: fwd_dropout_1
     op: dropout
     inputs:
-      x: fwd_norm_1
+      fields:
+        - fwd_norm_1
     cfg_params:
       dropout_rate: dropout
 

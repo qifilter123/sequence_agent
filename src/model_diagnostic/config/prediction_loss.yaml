@@ -10,7 +10,8 @@ nodes:
   - id: nextstep_hidden
     op: sequence_slice
     inputs:
-      x: encoder_output
+      fields:
+        - encoder_output
     params:
       dim: 1
       start: 0
@@ -19,7 +20,8 @@ nodes:
   - id: v_head
     op: linear_transform
     inputs:
-      x: nextstep_hidden
+      fields:
+        - nextstep_hidden
     params:
       output_dim: 1
     cfg_params:
@@ -28,14 +30,16 @@ nodes:
   - id: v_pred
     op: squeeze
     inputs:
-      x: v_head
+      fields:
+        - v_head
     params:
       dim: -1
 
   - id: sw_head
     op: linear_transform
     inputs:
-      x: nextstep_hidden
+      fields:
+        - nextstep_hidden
     cfg_params:
       input_dim: hidden_dim
       output_dim: sw_classes
@@ -43,7 +47,8 @@ nodes:
   - id: amt_head
     op: linear_transform
     inputs:
-      x: nextstep_hidden
+      fields:
+        - nextstep_hidden
     params:
       output_dim: 1
     cfg_params:
@@ -52,14 +57,16 @@ nodes:
   - id: amt_pred
     op: squeeze
     inputs:
-      x: amt_head
+      fields:
+        - amt_head
     params:
       dim: -1
 
   - id: is_new_head
     op: linear_transform
     inputs:
-      x: nextstep_hidden
+      fields:
+        - nextstep_hidden
     cfg_params:
       input_dim: hidden_dim
       output_dim: is_new_classes
@@ -165,7 +172,8 @@ nodes:
   - id: total_loss
     op: scale
     inputs:
-      x: recon_loss
+      fields:
+        - recon_loss
     cfg_params:
       factor: lambda_recon
 
