@@ -21,18 +21,9 @@ Training and HDBSCAN inference share the same DAG-defined feature and model sema
 
 ## DAG Definitions
 
-The processing pipeline is declared by the YAML files under `src/model_diagnostic/config/`:
+The project's DAG definitions are located under `src/model_diagnostic/config/`.
 
-| Definition | Responsibility |
-| --- | --- |
-| `input_extractor.yaml` | Extract raw sequence fields and expose the downstream raw-data contract. |
-| `input_transformer.yaml` | Transform extracted fields and assemble ordered model input. |
-| `model_structure.yaml` | Declare the model structure and model data flow. |
-| `prediction_loss.yaml` | Declare prediction targets, masking, and training-loss computation. |
-| `hdbscan_centroid_build.yaml` | Declare phase-1 embedding collection and centroid construction. |
-| `hdbscan_evaluation.yaml` | Declare phase-2 cluster-based evaluation. |
-
-These DAG definitions are the authoritative source for pipeline topology, operation selection, inputs, parameters, and data lineage. Python source provides the implementation of the operations referenced by the DAGs.
+The DAGs declare the processing topology, operation selection, inputs, parameters, and data lineage used by the training and inference pipelines. Each DAG should describe its own purpose and contract in its YAML file; those details are intentionally not duplicated here. Python source provides the implementations referenced by the DAGs.
 
 ## Source Organization
 
@@ -40,16 +31,11 @@ The primary implementation is under `src/model_diagnostic/`:
 
 | Path | Responsibility |
 | --- | --- |
-| `config/` | DAG definitions and generated diagnostic representations. |
+| `config/` | DAG definitions. |
 | `dag/` | Generic DAG processing and operation registries. |
 | `dag_ops/` | Feature, model, prediction/loss, and HDBSCAN DAG operations. |
 | `diagnostic/` | Diagnostic probes, registries, runtime support, and model-structure diagnostics. |
-| `model/` | Model-domain implementations and supporting components. |
-| `model_trainer.py` | Training entry point. |
-| `inference_hbscan.py` | HDBSCAN centroid-building and evaluation entry point. |
-| `hdbscan_report_helper.py` | HDBSCAN reporting support. |
-| `cfg_base.py` | Shared runtime configuration. |
-| `requirements.md` | Python package dependencies required by the project runtime. |
+| `model/` | Trained model artifacts produced by the training pipeline. |
 
 ## Diagnostic Agent and MCP Runtime
 
@@ -67,7 +53,7 @@ Activate the project Python virtual environment, then run from the project root:
 python src/model_diagnostic/model_trainer.py
 ```
 
-The trainer loads the input, model, and prediction/loss DAGs, trains the sequence model, runs configured diagnostics, and saves the trained model artifact.
+The command runs model training and saves the trained model artifact.
 
 ## Run HDBSCAN Inference and Evaluation
 
@@ -89,28 +75,12 @@ The Context Agent should use this file to determine the project scope and use th
 The primary context sources are:
 
 - `README.md` for stable project purpose, boundaries, entry points, and high-level flow.
-- `src/model_diagnostic/config/*.yaml` for authoritative processing topology and data lineage.
-- `src/model_diagnostic/dag/` for DAG execution and registry behavior.
-- `src/model_diagnostic/dag_ops/` for registered operation implementations.
-- `src/model_diagnostic/model/` for model-domain implementations.
-- `src/model_diagnostic/diagnostic/` for diagnostic instrumentation and runtime evidence collection.
-- `model_trainer.py` and `inference_hbscan.py` for end-to-end orchestration and runtime entry points.
+- `src/model_diagnostic/config/` for the DAG definitions.
+- Source code discovered transitively from the trainer and HDBSCAN commands documented above.
 - `requirements.md` for project runtime dependencies.
 - The MCP server implementation for the API boundary between the Diagnostic Agent and project runtime capabilities.
 
-When building project context, connect relationships in this direction:
-
-```text
-DAG definition -> DAG node/op -> registry -> Python implementation -> model or pipeline component -> runtime entry point
-```
-
-For agent-triggered execution, also connect:
-
-```text
-Diagnostic Agent -> MCP API/tool -> MCP server handler -> project runtime entry point -> DAG definitions
-```
-
-Generated files such as `model_structure.diagnostic.json` are diagnostic evidence derived from the model DAG. They should retain provenance to their source DAG and code version, but they are not authoritative source definitions.
+The Context Agent should start from the documented commands and use source-analysis tools exposed by MCP operations to discover imports, calls, registrations, DAG references, and downstream dependencies. These relationships must be derived from the current source rather than manually maintained in this README.
 
 Do not treat virtual environments, Python caches, logs, model checkpoints, temporary outputs, or other generated artifacts as source-code context unless a diagnostic task explicitly requires them.
 

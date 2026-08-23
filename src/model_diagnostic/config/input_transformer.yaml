@@ -1,3 +1,18 @@
+# -----------------------------------------------------------------------------
+# Overview
+# -----------------------------------------------------------------------------
+# Purpose: Derive model features from extracted sequence fields and assemble
+#   the model-input tensor plus the raw mapping required downstream.
+# DAG type: RUNTIME DAG; executed for each batch after input extraction.
+# Inputs: Extracted raw sequence fields supplied by the input-extractor DAG.
+# Outputs: model_input for the encoder and raw for prediction/loss processing.
+#
+# Framework contract:
+#   inputs     = DAG/external data dependencies
+#   params     = literal operation semantics
+#   cfg_params = attributes resolved from runtime['cfg']
+#   runtime    = caller-supplied execution objects and configuration
+
 version: 1
 dag_id: input_transformer
 

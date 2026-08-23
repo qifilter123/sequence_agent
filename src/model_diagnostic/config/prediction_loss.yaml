@@ -1,9 +1,22 @@
+# -----------------------------------------------------------------------------
+# Overview
+# -----------------------------------------------------------------------------
+# Purpose: Define and build next-step prediction heads, target preparation,
+#   masking, component losses, and the combined training objective.
+# DAG type: BUILD DAG; executed once during model initialization.
+# Inputs: Symbolic encoder_output and raw feature mapping.
+# Outputs: An executable torch.nn.Module exposed as model, returning predictions
+#   and loss values when called.
+# Execution: PyTorch calls the built module directly in the training hot path.
+#
+# Framework contract:
+#   inputs     = DAG/external data dependencies
+#   params     = literal operation semantics
+#   cfg_params = attributes resolved from runtime['cfg']
+#   runtime    = caller-supplied execution objects and configuration
+
 version: 1
 dag_id: prediction_loss
-
-# Source of truth for next-step prediction heads and the training objective.
-# This is a BUILD DAG: DagProcessor runs it once during model initialization.
-# The resulting torch.nn.Module executes directly in the PyTorch hot path.
 
 nodes:
   # Prediction input is encoder output at t; targets are the next step t+1.

@@ -1,13 +1,22 @@
+# -----------------------------------------------------------------------------
+# Overview
+# -----------------------------------------------------------------------------
+# Purpose: Define and build the trainable sequence-encoder topology.
+# DAG type: BUILD DAG; executed once during model initialization.
+# Inputs: Symbolic model input x_full.
+# Outputs: An executable encoder torch.nn.Module exposed as model.
+# Execution: PyTorch calls the built module directly during training/inference;
+#   DagProcessor is not on the hot path. Prediction heads and loss are defined
+#   separately by the prediction/loss DAG.
+#
+# Framework contract:
+#   inputs     = DAG/external data dependencies
+#   params     = literal operation semantics
+#   cfg_params = attributes resolved from runtime['cfg']
+#   runtime    = caller-supplied execution objects and configuration
+
 version: 1
 dag_id: model_structure
-
-# Source of truth for the trainable encoder topology.
-# This is a BUILD DAG: DagProcessor runs it once during model initialization.
-# Its root node outputs an executable torch.nn.Module. During training/inference,
-# PyTorch calls that module's forward(); DagProcessor is not on the hot path.
-#
-# Prediction heads and loss are intentionally NOT part of this DAG.
-# They are defined separately in prediction_loss.yaml.
 
 nodes:
   # x_full -> t_emb
