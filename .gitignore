@@ -4,3 +4,4 @@ tests/
 __pycache__/
 src/model_diagnostic/dag/__pycache__/
 src/model_diagnostic/model/
+src/model_diagnostic.egg-info/
