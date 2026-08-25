@@ -184,9 +184,8 @@ def train_internal(
 ):
     print("Generating anchored training data (gen_anchored_dataset)...")
     train_data = seq_gen.make_anchored_dataset(
-        current_cfg,
-        num_trx=current_cfg.num_trx,
-        is_training=True,
+        current_cfg=current_cfg,
+        num_trx=current_cfg.num_trx
     )
     n_records = len(train_data["dt"])
     print(

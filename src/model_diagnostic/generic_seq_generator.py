@@ -10,8 +10,8 @@ import torch
 from model_diagnostic.cfg_base import CFG2
 
 
-def gen_one_sequence2(cfg, is_training: bool = False) -> Tuple[np.ndarray, ...]:
-    force_right_align = not is_training
+def gen_one_sequence2(cfg, random_pos_anomaly: bool = False) -> Tuple[np.ndarray, ...]:
+    force_right_align = not random_pos_anomaly
     valid_len = random.randint(cfg.min_seq_len, cfg.max_seq_len)
     T = cfg.max_seq_len
     dt = np.zeros(T, dtype=np.float32)
@@ -357,9 +357,9 @@ def _gen_session_txns(cfg, alloc: _EntityAllocator, scenario: Optional[str],
                       start_time: float, identity: Optional[Dict[str, int]] = None,
                       share: Optional[Dict[str, int]] = None,
                       stable_fields: frozenset = frozenset(),
-                      is_training: bool = False) -> Tuple[List[dict], str, int]:
+                      random_pos_anomaly: bool = False) -> Tuple[List[dict], str, int]:
     fcfg = _forced_cfg(cfg, scenario)
-    d, a, sip, sem, sfp, sbl, ssh, m, sc, pstart = gen_one_sequence2(fcfg, is_training=is_training)
+    d, a, sip, sem, sfp, sbl, ssh, m, sc, pstart = gen_one_sequence2(fcfg, random_pos_anomaly=random_pos_anomaly)
     L = int(m.sum())
     cur = dict(identity) if identity is not None else {f: alloc.new() for f in _ENTITY_KEYS}
     flags = {"bca": sbl, "em": sem, "fp": sfp, "sa": ssh, "ip": sip}
@@ -430,7 +430,7 @@ def _blend_attack_steps(a_txns: List[dict], cfg) -> None:
 # ========================================================
 def _emit_victim_cluster(cfg, alloc: "_EntityAllocator", txns: List[dict],
                          currents: List[dict], WINDOW: float, remaining: int,
-                         is_training: bool = False) -> int:
+                         random_pos_anomaly: bool = False) -> int:
     cold_frac = getattr(cfg, "anchor_cold_start_frac", 0.15)
     p_gang = getattr(cfg, "anchor_gang_frac", 0.4)
     gang_range = getattr(cfg, "anchor_gang_size_range", (2, 4))
@@ -457,7 +457,7 @@ def _emit_victim_cluster(cfg, alloc: "_EntityAllocator", txns: List[dict],
             s_txns, _sc, _ps = _gen_session_txns(
                 cfg, alloc, scenario="normal", start_time=cursor,
                 identity=fake_id, stable_fields=frozenset({"em", "fp", "sa"}),
-                is_training=is_training)
+                random_pos_anomaly=random_pos_anomaly)
             txns.extend(s_txns)
             cursor = s_txns[-1]["t"] + random.uniform(60.0, WINDOW * 0.05)
         hacker_aged_until = cursor
@@ -471,7 +471,7 @@ def _emit_victim_cluster(cfg, alloc: "_EntityAllocator", txns: List[dict],
         for _h in range(n_hist):
             s_txns, _sc, _ps = _gen_session_txns(
                 cfg, alloc, scenario="normal", start_time=cursor, identity=dict(identity),
-                is_training=is_training)
+                random_pos_anomaly=random_pos_anomaly)
             txns.extend(s_txns)
             cursor = s_txns[-1]["t"] + random.uniform(3600.0, WINDOW * 0.1)
         share = {"bca": identity["bca"], "sa": drop_sa}
@@ -482,7 +482,7 @@ def _emit_victim_cluster(cfg, alloc: "_EntityAllocator", txns: List[dict],
             share["fp"] = drop_fp
         a_txns, _sc, _ps = _gen_session_txns(
             cfg, alloc, scenario="ATO", start_time=max(cursor, base_time, hacker_aged_until),
-            identity=dict(identity), share=share, is_training=is_training)
+            identity=dict(identity), share=share, random_pos_anomaly=random_pos_anomaly)
         if regime_b:
             _blend_attack_steps(a_txns, cfg)
         txns.extend(a_txns)
@@ -503,10 +503,10 @@ def build_transaction_pool(cfg, n_currents: int, random_pos_anomaly: bool = Fals
     for _ in range(n_currents):
         pat = _pick_from_weights(weights)
         if pat == "ATO":
-            _emit_victim_cluster(cfg, alloc, txns, currents, WINDOW, remaining=1, is_training=random_pos_anomaly)
+            _emit_victim_cluster(cfg, alloc, txns, currents, WINDOW, remaining=1, random_pos_anomaly=random_pos_anomaly)
         else:
             start = random.uniform(0.0, WINDOW * 0.95)
-            s_txns, _sc, _ps = _gen_session_txns(cfg, alloc, scenario=pat, start_time=start, is_training=random_pos_anomaly)
+            s_txns, _sc, _ps = _gen_session_txns(cfg, alloc, scenario=pat, start_time=start, random_pos_anomaly=random_pos_anomaly)
             txns.extend(s_txns)
             currents.append(s_txns[-1])
     return txns, currents
@@ -654,7 +654,7 @@ def _emit_current(idx: Dict[str, Dict[int, List[dict]]], current: dict, cfg,
 # 更新：将 is_training 向下透传至 build_transaction_pool
 # ========================================================
 def gen_anchored_dataset(cfg, num_samples: Optional[int] = None,
-                         is_training: bool = False,
+                         anomaly_position_random_occurs: bool = False,
                          num_trx: Optional[int] = None) -> Dict[str, Any]:
     if num_trx is not None:
         n_currents = max(1, int(num_trx))
@@ -664,7 +664,7 @@ def gen_anchored_dataset(cfg, num_samples: Optional[int] = None,
         target = num_samples if num_samples is not None else cfg.num_seqs
         n_currents = max(1, target // NUM_ANCHOR_TYPES)
 
-    txns, currents = build_transaction_pool(cfg, n_currents, random_pos_anomaly=False)
+    txns, currents = build_transaction_pool(cfg, n_currents, random_pos_anomaly=anomaly_position_random_occurs)
     idx = _index_pool(txns)
     records: List[dict] = []
     pair_id = 0
@@ -696,11 +696,11 @@ def gen_anchored_dataset(cfg, num_samples: Optional[int] = None,
     out["trx_scenario"] = [c["scenario"] for c in currents]
     return out
 
-def make_anchored_dataset(current_cfg: CFG2, num_samples: int = None, is_training: bool = False,
+def make_anchored_dataset(current_cfg: CFG2, num_samples: int = None, anomaly_position_random_occurs: bool = False,
                           num_trx: int = None) -> dict:
     raw = gen_anchored_dataset(
         current_cfg, num_samples=(num_samples if num_samples is not None else current_cfg.num_seqs),
-        is_training=is_training, num_trx=num_trx,
+        anomaly_position_random_occurs=anomaly_position_random_occurs, num_trx=num_trx,
     )
     out = {
         "dt": torch.tensor(raw["dt"], dtype=torch.float32),

@@ -176,7 +176,7 @@ class CFG2(CFG):
     # Model architecture parameters that can be retrained from scratch
     # hidden_dim: int = 128
     hidden_dim: int = 64
-    num_layers: int = 2
+    #num_layers: int = 2
     dropout: float = 0.1
 
     @classmethod

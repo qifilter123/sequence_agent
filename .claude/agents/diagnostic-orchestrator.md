@@ -132,7 +132,7 @@ Use only declared tools.
 
 ## Source Inspection
 
-Use `CLAUDE.md` first for stable project context.
+Use `README.md` first for stable project context.
 
 Use `Read`, `Grep`, and `Glob` when source inspection can resolve implementation uncertainty, including:
 

@@ -924,9 +924,8 @@ class DiagnosticRuntime:
             train_driver.set_seed(cfg.seed)
             with redirect_stdout(sys.stderr):
                 train_data = seq_gen.make_anchored_dataset(
-                    cfg,
-                    num_trx=cfg.num_trx,
-                    is_training=True,
+                    current_cfg=cfg,
+                    num_trx=cfg.num_trx
                 )
 
             txn_index = train_driver.build_txn_index(train_data)

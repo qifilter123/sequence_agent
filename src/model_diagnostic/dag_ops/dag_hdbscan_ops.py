@@ -87,7 +87,7 @@ def generate_anchored_dataset(inputs, params, runtime):
     del inputs
     model_cfg = _require_runtime(runtime, "model_cfg")
     num_trx = _require_positive_int(params, "num_trx")
-    data = seq_gen.make_anchored_dataset(model_cfg, num_trx=num_trx)
+    data = seq_gen.make_anchored_dataset(current_cfg=model_cfg, num_trx=num_trx)
     if not isinstance(data, dict):
         raise TypeError("make_anchored_dataset must return a dictionary")
     if "dt" not in data or len(data["dt"]) == 0:
