@@ -9,7 +9,8 @@
       "mcp__diagnostics__get_tunable_parameters",
       "mcp__diagnostics__restart_session",
       "mcp__diagnostics__get_experiment_comparison",
-      "mcp__diagnostics__evaluate_hdbscan"
+      "mcp__diagnostics__evaluate_hdbscan",
+      "Bash(PYTHONPATH=src python *)"
     ]
   },
   "enableAllProjectMcpServers": true,

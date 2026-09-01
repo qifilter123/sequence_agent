@@ -56,7 +56,8 @@ class CFG:
     p_traveler: float = 0.05
     p_shopper: float = 0.07
     p_upgrader: float = 0.07
-    p_chotic_normal: float = 0.05
+    #p_chotic_normal: float = 0.05
+    p_chotic_normal: float = 0.0
 
     anomaly_patterns = [
         "Stuffing_low_and_slow",

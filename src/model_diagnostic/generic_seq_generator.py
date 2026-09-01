@@ -317,7 +317,6 @@ _ENTITY_KEYS: Tuple[str, ...] = ("bca", "em", "fp", "sa", "ip")
 def _is_anomaly(scenario: str) -> bool:
     return scenario.startswith("ATO") or scenario.startswith("Stuffing")
 
-
 class _EntityAllocator:
     def __init__(self, start: int = 1):
         self._next = start

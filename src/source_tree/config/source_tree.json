@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "include": [
+    "src/model_diagnostic/*.py",
+    "src/model_diagnostic/dag/**/*.py",
+    "src/model_diagnostic/dag_ops/**/*.py"
+  ],
+  "exclude": [],
+  "fail_on_parse_error": true,
+  "languages": [
+    {
+      "name": "python",
+      "extensions": [".py"],
+      "module": "tree_sitter_python",
+      "factory": "language",
+      "extractor": "python"
+    }
+  ]
+}
