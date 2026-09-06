@@ -17,8 +17,13 @@ def extract_sequence_fields(
     inputs: dict[str, Any],
     params: dict[str, Any],
     runtime: dict[str, Any],
-) -> dict[str, dict[str, torch.Tensor]]:
-    """Move configured sequence fields to the target device and reshape them."""
+) -> dict[str, torch.Tensor]:
+    """Return extracted fields; the DAG outputs declaration supplies the alias.
+
+    This operation returns the field mapping itself, not a DAG-level
+    ``{"raw": fields}`` envelope. ``outputs: {raw: extracted_batch}`` owns that
+    public return shape.
+    """
     fields = inputs.get("fields")
 
     if not isinstance(fields, dict) or not fields:
@@ -58,7 +63,7 @@ def extract_sequence_fields(
             )
         raw[field_name] = source.to(device).view(batch_size, seq_len)
 
-    return {"raw": raw}
+    return raw
 
 
 @FEATURE_DAG_REGISTRY.register("field_to_history")

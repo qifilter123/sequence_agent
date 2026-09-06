@@ -41,3 +41,6 @@ nodes:
         is_new_ship: is_new_ship
     cfg_params:
       device: device
+
+outputs:
+  raw: extracted_batch

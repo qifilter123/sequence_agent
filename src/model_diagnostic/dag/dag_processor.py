@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -49,9 +48,10 @@ class DagProcessor:
     or ``derived_params``.
 
     DAG outputs:
-      If ``outputs`` is configured, it is used exactly as declared. If omitted,
-      the final node result is returned directly when it is a mapping; otherwise
-      it is returned as ``{final_node_id: result}``.
+      Every DAG must declare a non-empty ``outputs`` mapping. Each binding is
+      ``output_name: source_name`` and returns the complete referenced context
+      value unchanged. Mapping-valued results are never implicitly unwrapped
+      or flattened; operations return data and outputs supplies public names.
     """
 
     def __init__(self, registry: OperationRegistry) -> None:
@@ -212,23 +212,28 @@ class DagProcessor:
                         f"'{source_node_id}'"
                     )
 
-        outputs = config.get("outputs")
-        if outputs is not None:
-            if not isinstance(outputs, dict) or not outputs:
-                raise DagConfigError(
-                    f"DAG '{dag_id}' outputs must be a non-empty mapping when provided"
-                )
-            for output_name, source in outputs.items():
-                if not isinstance(output_name, str) or not output_name:
-                    raise DagConfigError(
-                        f"DAG '{dag_id}' output names must be non-empty strings"
-                    )
-                if not isinstance(source, str) or not source:
-                    raise DagConfigError(
-                        f"DAG '{dag_id}' output '{output_name}' must reference one source name"
-                    )
+        self._validate_outputs(config)
 
         self._topological_nodes(config)
+
+    def _validate_outputs(self, config: dict[str, Any]) -> dict[str, str]:
+        """Require explicit aliases without interpreting the referenced values."""
+        dag_id = config.get("dag_id")
+        outputs = config.get("outputs")
+        if not isinstance(outputs, dict) or not outputs:
+            raise DagConfigError(
+                f"DAG '{dag_id}' requires an explicit non-empty 'outputs' mapping"
+            )
+        for output_name, source in outputs.items():
+            if not isinstance(output_name, str) or not output_name:
+                raise DagConfigError(
+                    f"DAG '{dag_id}' output names must be non-empty strings"
+                )
+            if not isinstance(source, str) or not source:
+                raise DagConfigError(
+                    f"DAG '{dag_id}' output '{output_name}' must reference one source name"
+                )
+        return dict(outputs)
 
     def run(
         self,
@@ -240,6 +245,10 @@ class DagProcessor:
         if not isinstance(inputs, dict):
             raise TypeError("DAG inputs must be a dictionary")
 
+        # Also guard configs supplied directly or edited after load_config().
+        # Fail before operations can have side effects, without repeating full
+        # configuration validation in the per-batch execution path.
+        configured_outputs = self._validate_outputs(config)
         runtime_context = {} if runtime is None else dict(runtime)
         external_inputs: dict[str, Any] = dict(inputs)
         context: dict[str, Any] = dict(inputs)
@@ -301,23 +310,15 @@ class DagProcessor:
 
             context[node_id] = result
 
-        configured_outputs = config.get("outputs")
-        if configured_outputs is not None:
-            result: dict[str, Any] = {}
-            for output_name, source_name in configured_outputs.items():
-                if source_name not in context:
-                    raise DagExecutionError(
-                        f"DAG '{dag_id}' output '{output_name}' references unavailable "
-                        f"source '{source_name}'"
-                    )
-                result[output_name] = context[source_name]
-            return result
-
-        final_node_id = ordered_nodes[-1]["id"]
-        final_result = context[final_node_id]
-        if isinstance(final_result, Mapping):
-            return dict(final_result)
-        return {final_node_id: final_result}
+        result: dict[str, Any] = {}
+        for output_name, source_name in configured_outputs.items():
+            if source_name not in context:
+                raise DagExecutionError(
+                    f"DAG '{dag_id}' output '{output_name}' references unavailable "
+                    f"source '{source_name}'"
+                )
+            result[output_name] = context[source_name]
+        return result
 
     def _topological_nodes(self, config: dict[str, Any]) -> list[dict[str, Any]]:
         nodes: list[dict[str, Any]] = config["nodes"]

@@ -190,7 +190,7 @@ nodes:
     cfg_params:
       factor: lambda_recon
 
-  - id: model
+  - id: model_wrapper_node
     op: root_model
     inputs:
       loss: total_loss
@@ -206,4 +206,4 @@ nodes:
       is_new_logits: is_new_head
 
 outputs:
-  model: model
+  model: model_wrapper_node

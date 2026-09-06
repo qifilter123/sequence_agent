@@ -562,7 +562,7 @@ class DiagnosticRuntime:
                             self.optimizer.zero_grad(set_to_none=True)
 
                             with redirect_stdout(sys.stderr):
-                                batch, _, _ = batch_util.sample_txn_batch(
+                                batch = batch_util.sample_txn_batch(
                                     self.train_data,
                                     self.txn_index,
                                     self.cfg.txn_batch_size,

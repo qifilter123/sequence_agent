@@ -132,7 +132,7 @@ def extract_record_embeddings(inputs, params, runtime):
         mask = raw["mask"]
         valid_len = torch.clamp(mask.sum(dim=1).long(), min=1)
         batch_indices = torch.arange(encoder_output.size(0), device=encoder_output.device)
-        emb = encoder_output[batch_indices, valid_len - 1]
+        emb = encoder_output[batch_indices, valid_len - 1] #make sure getting the last one
         emb = F.normalize(emb, p=2, dim=-1)
         embs.append(emb.cpu())
 

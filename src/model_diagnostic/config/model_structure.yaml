@@ -179,10 +179,10 @@ nodes:
   # upstream symbolic graph as one executable nn.Module. With one root input,
   # forward() returns that value directly. External inputs (x_full here) are
   # discovered from the symbolic dependency graph.
-  - id: model
+  - id: model_wrapper_node
     op: root_model
     inputs:
       embeddings: fwd_residual_1
 
 outputs:
-  model: model
+  model: model_wrapper_node

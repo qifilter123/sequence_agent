@@ -1,0 +1,167 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/source-tree/dag-schema.json",
+  "title": "Source Tree DAG graph",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "nodes",
+    "links"
+  ],
+  "properties": {
+    "nodes": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/node"
+      }
+    },
+    "links": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/link"
+      }
+    }
+  },
+  "$defs": {
+    "jsonValue": {
+      "type": [
+        "string",
+        "number",
+        "boolean",
+        "null",
+        "array",
+        "object"
+      ]
+    },
+    "node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "file_type",
+        "source_file",
+        "source_location"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^(?:code|[A-Za-z0-9_-]+)\\.[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+        },
+        "file_type": {
+          "type": "string",
+          "enum": [
+            "DAG",
+            "DAG_NODE",
+            "OPERATION",
+            "PARAM",
+            "CFG_PARAM",
+            "DERIVED_PARAM",
+            "INPUT_LIST",
+            "INPUT_MAP",
+            "INPUT_FIELD",
+            "OUTPUT_MAP",
+            "OUTPUT_FIELD",
+            "CODE"
+          ]
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1
+        },
+        "value": {
+          "$ref": "#/$defs/jsonValue"
+        },
+        "source_file": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source_location": {
+          "type": "string",
+          "pattern": "^L[1-9][0-9]*$"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "file_type": {
+                "const": "PARAM"
+              }
+            },
+            "required": [
+              "file_type"
+            ]
+          },
+          "then": {
+            "required": [
+              "label",
+              "value"
+            ]
+          },
+          "else": {
+            "not": {
+              "required": [
+                "value"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "file_type": {
+                "enum": [
+                  "DAG",
+                  "DAG_NODE",
+                  "OPERATION",
+                  "CFG_PARAM",
+                  "DERIVED_PARAM",
+                  "INPUT_LIST",
+                  "INPUT_MAP",
+                  "OUTPUT_MAP",
+                  "OUTPUT_FIELD",
+                  "CODE"
+                ]
+              }
+            },
+            "required": [
+              "file_type"
+            ]
+          },
+          "then": {
+            "required": [
+              "label"
+            ]
+          }
+        }
+      ]
+    },
+    "link": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source",
+        "target",
+        "relation"
+      ],
+      "properties": {
+        "source": {
+          "type": "string",
+          "minLength": 1
+        },
+        "target": {
+          "type": "string",
+          "minLength": 1
+        },
+        "relation": {
+          "type": "string",
+          "enum": [
+            "contains",
+            "uses",
+            "references"
+          ]
+        }
+      }
+    }
+  }
+}

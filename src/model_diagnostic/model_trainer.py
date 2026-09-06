@@ -61,12 +61,12 @@ def build_full_features(batch, current_cfg, is_training=False):
         "is_training": is_training,
     }
 
-    extracted = processor.run(
+    extracted_raw = processor.run(
         extractor_cfg,
         inputs=batch,
         runtime=runtime,
-    )["raw"]
-
+    )
+    extracted = extracted_raw["raw"]
     transformed = processor.run(
         transformer_cfg,
         inputs=extracted,
@@ -212,16 +212,16 @@ def train_internal(
 
     current_model.train()
     for step in range(current_cfg.steps):
+
         step_context = (
-            probe.step(step, phase="train")
-            if probe is not None
+            probe.step(step, phase="train") if probe is not None
             else nullcontext()
         )
 
         with step_context:
             opt.zero_grad(set_to_none=True)
 
-            batch, _, _ = batch_util.sample_txn_batch(
+            batch = batch_util.sample_txn_batch(
                 train_data,
                 txn_index,
                 current_cfg.txn_batch_size,
@@ -365,39 +365,14 @@ def init_model(current_cfg):
 
     return model.to(current_cfg.device)
 
-def _migrate_legacy_prediction_checkpoint_keys(state_dict):
-    """Remap the transitional prediction_helper head keys to the DAG layout.
-
-    The migration is intentionally load-only. New checkpoints are always saved
-    with the prediction_loss.model_nodes.* structure.
-    """
-    migrated = False
-    for head_name in ("v_head", "sw_head", "amt_head", "is_new_head"):
-        for suffix in ("weight", "bias"):
-            old_key = f"prediction_helper.{head_name}.{suffix}"
-            new_key = f"prediction_loss.model_nodes.{head_name}.{suffix}"
-            if old_key not in state_dict:
-                continue
-            if new_key in state_dict:
-                raise RuntimeError(
-                    "Checkpoint contains both legacy and DAG prediction-head keys: "
-                    f"{old_key!r} and {new_key!r}"
-                )
-            state_dict[new_key] = state_dict.pop(old_key)
-            migrated = True
-    return migrated
-
-
 def load_trained_model(current_cfg):
     model = init_model(current_cfg)
     state_dict = torch.load(
         current_cfg.model_path,
         map_location=current_cfg.device,
     )
-    migrated = _migrate_legacy_prediction_checkpoint_keys(state_dict)
+
     model.load_state_dict(state_dict)
-    if migrated:
-        print("Migrated legacy prediction_helper checkpoint keys to prediction_loss DAG keys")
     model.eval()
     print(
         "Loaded DAG-built Seq-on-Graph model "

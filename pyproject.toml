@@ -16,7 +16,7 @@ dependencies = [
 
 
 [project.scripts]
-diagnostic-mcp = "model_diagnostic.diagnostic_mcp_server:main"
+diagnostic-mcp = "model_diagnostic.diagnostic.diagnostic_mcp_server:main"
 
 
 [tool.setuptools.packages.find]
