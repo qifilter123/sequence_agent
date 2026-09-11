@@ -1,7 +1,9 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://example.invalid/source-tree/dag-schema.json",
+  "$id": "https://example.invalid/source-tree/src-graph-dag-schema.json",
   "title": "Source Tree DAG graph",
+  "description": "A DAG graph combined with source-code symbols. CODE nodes use simple symbol names as labels. Source ownership and nesting, including class-to-attribute and class-to-method relationships, are represented by CODE contains CODE links.",
+  "$comment": "Cross-node validation must enforce these CODE relationships: CODE contains CODE; CFG_PARAM uses CODE; OPERATION references CODE.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -66,7 +68,8 @@
         },
         "label": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "Display name of this node. For a CODE node, this is only the symbol's simple declared name, such as HBSCAN4Config or eval_num_trx. Do not encode the parent scope as HBSCAN4Config.eval_num_trx; represent that scope with a CODE contains CODE link."
         },
         "value": {
           "$ref": "#/$defs/jsonValue"
@@ -155,6 +158,7 @@
         },
         "relation": {
           "type": "string",
+          "description": "Graph relationship. contains represents structural ownership and may connect CODE to CODE; uses connects a CFG_PARAM to its CODE definition; references connects an OPERATION to its CODE implementation.",
           "enum": [
             "contains",
             "uses",

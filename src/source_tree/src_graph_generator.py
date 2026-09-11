@@ -1,8 +1,9 @@
-"""Build a flat DAG graph from YAML declarations.
+"""Build a flat DAG graph from YAML and Tree-sitter source facts.
 
-The generator deliberately stops at source-code resolution.  OPERATION and
-CFG_PARAM nodes are emitted into the graph and returned as unresolved records;
-an agent can later create verified CODE nodes and the corresponding links.
+YAML declarations produce the base graph. OPERATION and CFG_PARAM references
+are then resolved against the Tree-sitter SQLite index. Verified definitions
+become CODE nodes and links; only references with no valid match are reported
+as unresolved for later agent analysis.
 """
 
 from __future__ import annotations
@@ -13,14 +14,17 @@ import json
 import math
 import os
 import re
+import sqlite3
 import tempfile
 import uuid
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any, Iterable, Mapping
+from pathlib import Path, PurePosixPath
+from typing import Any, Callable, Iterable, Mapping
 
 import yaml
 from yaml.nodes import MappingNode, Node, ScalarNode, SequenceNode
+
+from source_tree.ts_query import query_nodes
 
 
 DEFAULT_SOURCE_ROOT = Path(__file__).resolve().parent.parent
@@ -30,7 +34,24 @@ DEFAULT_INPUT_GLOB = str(
 DEFAULT_OUTPUT_PATH = str(
     DEFAULT_SOURCE_ROOT / "generated" / "source_tree" / "dag_graph.json"
 )
-DEFAULT_SCHEMA_PATH = Path(__file__).with_name("dag-schema.json")
+DEFAULT_REPORT_PATH = str(
+    DEFAULT_SOURCE_ROOT / "generated" / "source_tree" / "dag_graph_report.json"
+)
+DEFAULT_FACT_DATABASE_PATH = str(
+    DEFAULT_SOURCE_ROOT / "generated" / "ts_source_tree" / "facts.sqlite"
+)
+DEFAULT_SCHEMA_PATH = Path(__file__).with_name("src-graph-dag-schema.json")
+
+_SOURCE_QUERY_LIMIT = 500
+
+_GRAPH_REPORT_KEYS = {
+    "source_root",
+    "output_path",
+    "node_count",
+    "link_count",
+    "unresolved_count",
+    "unresolved_nodes",
+}
 
 _ALLOWED_LINK_TYPES = {
     ("DAG", "contains", "DAG_NODE"),
@@ -50,6 +71,7 @@ _ALLOWED_LINK_TYPES = {
     ("OUTPUT_FIELD", "uses", "DAG_NODE"),
     ("OPERATION", "references", "CODE"),
     ("CFG_PARAM", "uses", "CODE"),
+    ("CODE", "contains", "CODE"),
 }
 
 _LABELED_NODE_TYPES = {
@@ -142,13 +164,13 @@ class _GraphBuilder:
         self,
         source_node: Mapping[str, Any],
         *,
-        reference: str,
+        code_reference: str,
         relation: str,
     ) -> None:
         self.unresolved_nodes.append(
             {
                 "source_node": dict(source_node),
-                "reference": reference,
+                "code_reference": code_reference,
                 "relation": relation,
                 "target_file_type": "CODE",
             }
@@ -304,7 +326,7 @@ def _build_declaration_details(
     builder.add_link(owner_id, operation_node["id"], "contains")
     builder.add_unresolved(
         operation_node,
-        reference=operation,
+        code_reference=operation,
         relation="references",
     )
 
@@ -364,7 +386,11 @@ def _build_declaration_details(
                 source_location=_line(key_node),
             )
             builder.add_link(owner_id, cfg_node["id"], "contains")
-            builder.add_unresolved(cfg_node, reference=reference, relation="uses")
+            builder.add_unresolved(
+                cfg_node,
+                code_reference=reference,
+                relation="uses",
+            )
 
     if "derived_params" in fields:
         derived_params = _require_mapping_data(
@@ -839,12 +865,9 @@ def _validate_graph(
             use_count = len(typed_outgoing.get((node_id, "uses"), []))
             if use_count > 1:
                 errors.append(f"INPUT_FIELD {node_id} has more than one uses link")
-        elif file_type == "OPERATION":
-            if len(typed_outgoing.get((node_id, "references"), [])) > 1:
-                errors.append(f"OPERATION {node_id} has more than one references link")
-        elif file_type == "CFG_PARAM":
-            if len(typed_outgoing.get((node_id, "uses"), [])) > 1:
-                errors.append(f"CFG_PARAM {node_id} has more than one uses link")
+        # OPERATION and CFG_PARAM may intentionally link to multiple CODE
+        # definitions. The agent can use that one-to-many context to choose the
+        # implementation that applies to a particular runtime flow.
 
     try:
         json.dumps(graph, ensure_ascii=False, allow_nan=False)
@@ -862,6 +885,291 @@ def _dedupe(items: Iterable[str]) -> list[str]:
 def _resolve_from_root(source_root: Path, path: str | os.PathLike[str]) -> Path:
     candidate = Path(path)
     return candidate if candidate.is_absolute() else source_root / candidate
+
+
+def _resolve_source_root(
+    source_root: str | os.PathLike[str] | None = None,
+) -> Path:
+    return (
+        Path(source_root).expanduser().resolve()
+        if source_root is not None
+        else DEFAULT_SOURCE_ROOT
+    )
+
+
+def _normalize_fact_source_file(source_file: Any, source_root: Path) -> str:
+    """Convert a fact-index path to the graph's source-root-relative form."""
+
+    if not isinstance(source_file, str) or not source_file:
+        raise GraphGenerationError("Tree-sitter result has no source file")
+
+    native_path = Path(source_file)
+    if native_path.is_absolute():
+        try:
+            relative = native_path.resolve().relative_to(source_root.resolve())
+        except ValueError as exc:
+            raise GraphGenerationError(
+                f"Tree-sitter source file is outside source root {source_root}: "
+                f"{source_file}"
+            ) from exc
+        normalized = relative.as_posix()
+    else:
+        portable = source_file.replace("\\", "/")
+        while portable.startswith("./"):
+            portable = portable[2:]
+        parts = list(PurePosixPath(portable).parts)
+        if parts and parts[0] == source_root.name:
+            parts = parts[1:]
+        if not parts or any(part in {"", ".", ".."} for part in parts):
+            raise GraphGenerationError(
+                f"Tree-sitter result has invalid source file: {source_file!r}"
+            )
+        normalized = PurePosixPath(*parts).as_posix()
+
+    resolved = source_root.joinpath(*PurePosixPath(normalized).parts).resolve()
+    try:
+        resolved.relative_to(source_root.resolve())
+    except ValueError as exc:
+        raise GraphGenerationError(
+            f"Tree-sitter source file is outside source root {source_root}: "
+            f"{source_file}"
+        ) from exc
+    if not resolved.is_file():
+        raise GraphGenerationError(
+            f"Tree-sitter source file does not exist under source root: {normalized}"
+        )
+    return normalized
+
+
+def _query_parent_node(
+    database_path: Path,
+    parent_id: Any,
+    cache: dict[str, dict[str, Any] | None],
+) -> dict[str, Any] | None:
+    if not isinstance(parent_id, str) or not parent_id:
+        return None
+    if parent_id in cache:
+        return cache[parent_id]
+
+    result = query_nodes(database_path, node_id=parent_id, limit=2)
+    parent = (
+        result["nodes"][0]
+        if result["count"] == 1 and not result["truncated"]
+        else None
+    )
+    cache[parent_id] = parent
+    return parent
+
+
+def _query_code_candidates(
+    database_path: Path,
+    *,
+    source_type: str,
+    code_reference: str,
+    parent_cache: dict[str, dict[str, Any] | None],
+) -> tuple[list[dict[str, Any]], str | None]:
+    """Return verified Tree-sitter definition identifiers for one reference."""
+
+    if source_type == "OPERATION":
+        field_name = "name"
+        allowed_parent_types = {"function_definition"}
+    elif source_type == "CFG_PARAM":
+        field_name = "left"
+        allowed_parent_types = {"assignment"}
+    else:
+        return [], f"unsupported unresolved source type: {source_type}"
+
+    result = query_nodes(
+        database_path,
+        node_type="identifier",
+        field_name=field_name,
+        text=code_reference,
+        limit=_SOURCE_QUERY_LIMIT,
+    )
+    if result["truncated"]:
+        return [], (
+            f"Tree-sitter query exceeded {_SOURCE_QUERY_LIMIT} candidates for "
+            f"{code_reference!r}"
+        )
+
+    candidates: list[dict[str, Any]] = []
+    seen: set[tuple[str, int, int, str]] = set()
+    for row in result["nodes"]:
+        parent = _query_parent_node(database_path, row.get("parent_id"), parent_cache)
+        if parent is None or parent.get("node_type") not in allowed_parent_types:
+            continue
+
+        source_file = row.get("file")
+        start_line = row.get("start_line")
+        start_column = row.get("start_column")
+        label = row.get("text")
+        if (
+            not isinstance(source_file, str)
+            or not isinstance(start_line, int)
+            or start_line < 1
+            or not isinstance(start_column, int)
+            or start_column < 0
+            or not isinstance(label, str)
+            or label != code_reference
+        ):
+            continue
+
+        key = (source_file, start_line, start_column, label)
+        if key not in seen:
+            seen.add(key)
+            candidates.append(row)
+
+    if not candidates:
+        return [], f"no valid Tree-sitter definition found for {code_reference!r}"
+    return candidates, None
+
+
+def generate_dag_to_src_graph(
+    graph: dict[str, Any],
+    unresolved_nodes: list[dict[str, Any]],
+    *,
+    database_path: str | os.PathLike[str],
+    source_root: str | os.PathLike[str],
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Resolve DAG source references from the Tree-sitter SQLite index.
+
+    Every verified match becomes a CODE node and link. Multiple definitions are
+    intentionally retained as one-to-many links for later agent analysis. Only
+    references with no valid match remain unresolved.
+    """
+
+    root = Path(source_root).expanduser().resolve()
+    database = Path(database_path).expanduser().resolve()
+    if unresolved_nodes and not database.is_file():
+        raise GraphGenerationError(
+            f"Tree-sitter fact database does not exist: {database}. "
+            "Build the source tree and fact index first."
+        )
+
+    nodes = graph.get("nodes")
+    links = graph.get("links")
+    if not isinstance(nodes, list) or not isinstance(links, list):
+        raise GraphGenerationError("graph must contain nodes and links arrays")
+
+    nodes_by_id = {
+        node.get("id"): node
+        for node in nodes
+        if isinstance(node, dict) and isinstance(node.get("id"), str)
+    }
+    code_nodes: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for node in nodes:
+        if isinstance(node, dict) and node.get("file_type") == "CODE":
+            key = (
+                node.get("source_file"),
+                node.get("source_location"),
+                node.get("label"),
+            )
+            if all(isinstance(value, str) and value for value in key):
+                code_nodes[key] = node
+
+    link_triples = {
+        (link.get("source"), link.get("relation"), link.get("target"))
+        for link in links
+        if isinstance(link, dict)
+    }
+    parent_cache: dict[str, dict[str, Any] | None] = {}
+    query_cache: dict[
+        tuple[str, str], tuple[list[dict[str, Any]], str | None]
+    ] = {}
+    remaining: list[dict[str, Any]] = []
+
+    for unresolved in unresolved_nodes:
+        source_snapshot = unresolved.get("source_node")
+        code_reference = unresolved.get("code_reference")
+        relation = unresolved.get("relation")
+        if not isinstance(source_snapshot, dict):
+            raise GraphGenerationError("unresolved record has no source_node object")
+        source_id = source_snapshot.get("id")
+        source_node = nodes_by_id.get(source_id)
+        if source_node is None:
+            raise GraphGenerationError(
+                f"unresolved source node does not exist in graph: {source_id!r}"
+            )
+        source_type = source_node.get("file_type")
+        expected_relation = {
+            "OPERATION": "references",
+            "CFG_PARAM": "uses",
+        }.get(source_type)
+        if expected_relation is None or relation != expected_relation:
+            raise GraphGenerationError(
+                f"invalid unresolved relation for {source_type}: {relation!r}"
+            )
+        if not isinstance(code_reference, str) or not code_reference:
+            raise GraphGenerationError(
+                f"unresolved source {source_id} has no code_reference"
+            )
+
+        cache_key = (source_type, code_reference)
+        if cache_key not in query_cache:
+            try:
+                query_cache[cache_key] = _query_code_candidates(
+                    database,
+                    source_type=source_type,
+                    code_reference=code_reference,
+                    parent_cache=parent_cache,
+                )
+            except (OSError, sqlite3.Error, ValueError) as exc:
+                raise GraphGenerationError(
+                    f"Cannot query Tree-sitter fact database {database}: {exc}"
+                ) from exc
+        candidates, reason = query_cache[cache_key]
+        if not candidates:
+            retained = dict(unresolved)
+            retained["reason"] = reason
+            remaining.append(retained)
+            continue
+
+        valid_candidate_count = 0
+        candidate_error: str | None = None
+        for candidate in candidates:
+            try:
+                source_file = _normalize_fact_source_file(
+                    candidate.get("file"), root
+                )
+            except GraphGenerationError as exc:
+                candidate_error = str(exc)
+                continue
+            label = candidate["text"]
+            source_location = f"L{candidate['start_line']}"
+            code_key = (source_file, source_location, label)
+            code_node = code_nodes.get(code_key)
+            if code_node is None:
+                code_node = {
+                    "id": f"code.{uuid.uuid4()}",
+                    "file_type": "CODE",
+                    "source_file": source_file,
+                    "source_location": source_location,
+                    "label": label,
+                }
+                nodes.append(code_node)
+                nodes_by_id[code_node["id"]] = code_node
+                code_nodes[code_key] = code_node
+
+            triple = (source_id, relation, code_node["id"])
+            if triple not in link_triples:
+                links.append(
+                    {
+                        "source": source_id,
+                        "target": code_node["id"],
+                        "relation": relation,
+                    }
+                )
+                link_triples.add(triple)
+            valid_candidate_count += 1
+
+        if valid_candidate_count == 0:
+            retained = dict(unresolved)
+            retained["reason"] = candidate_error or (
+                f"no usable Tree-sitter definition found for {code_reference!r}"
+            )
+            remaining.append(retained)
+
+    return graph, remaining
 
 
 def _atomic_write_graph(
@@ -898,24 +1206,65 @@ def _atomic_write_graph(
             temporary_path.unlink()
 
 
+def _save_graph_report(graph_report: Mapping[str, Any], report_path: Path) -> None:
+    """Atomically save the report returned by ``generate_graph``."""
+
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    file_descriptor, temporary_name = tempfile.mkstemp(
+        dir=report_path.parent,
+        prefix=f".{report_path.name}.",
+        suffix=".tmp",
+    )
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(file_descriptor, "w", encoding="utf-8", newline="\n") as handle:
+            json.dump(
+                graph_report,
+                handle,
+                ensure_ascii=False,
+                indent=2,
+                allow_nan=False,
+            )
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_path, report_path)
+    finally:
+        if temporary_path.exists():
+            temporary_path.unlink()
+
+
+def get_graph_report(
+    source_root: str | os.PathLike[str] | None = None,
+) -> str:
+    """Return the saved graph report as JSON, or an empty JSON object."""
+
+    root = _resolve_source_root(source_root)
+    report_path = root / "generated" / "source_tree" / "dag_graph_report.json"
+    if not report_path.is_file():
+        return "{}"
+
+    with report_path.open("r", encoding="utf-8") as handle:
+        graph_report = json.load(handle)
+    return json.dumps(graph_report, ensure_ascii=False)
+
+
 def generate_graph(
     source_root: str | os.PathLike[str] | None = None,
     *,
     input_glob: str | None = None,
     output_path: str | os.PathLike[str] | None = None,
     schema_path: str | os.PathLike[str] | None = None,
+    fact_database_path: str | os.PathLike[str] | None = None,
 ) -> dict[str, Any]:
-    """Generate, validate, and atomically publish a base DAG graph.
+    """Generate, source-resolve, validate, and atomically publish a DAG graph.
 
-    The returned ``unresolved_nodes`` are diagnostics for later agent work and
-    are never inserted into ``dag_graph.json``.
+    The returned ``unresolved_nodes`` contain only source references that could
+    not be resolved from the Tree-sitter index. Diagnostics are never inserted
+    into ``dag_graph.json``.
     """
 
-    root = (
-        Path(source_root).expanduser().resolve()
-        if source_root is not None
-        else DEFAULT_SOURCE_ROOT
-    )
+    root = _resolve_source_root(source_root)
     if not root.is_dir():
         raise GraphGenerationError(f"Source root is not a directory: {root}")
     resolved_schema = (
@@ -933,9 +1282,20 @@ def generate_graph(
         if output_path is not None
         else (root / "generated" / "source_tree" / "dag_graph.json").resolve()
     )
+    resolved_database = (
+        _resolve_from_root(root, fact_database_path).resolve()
+        if fact_database_path is not None
+        else (root / "generated" / "ts_source_tree" / "facts.sqlite").resolve()
+    )
     input_paths = _collect_input_files(root, resolved_input_glob)
     documents = [_load_document(path, root) for path in input_paths]
     graph, unresolved_nodes = _build_graph(documents)
+    graph, unresolved_nodes = generate_dag_to_src_graph(
+        graph,
+        unresolved_nodes,
+        database_path=resolved_database,
+        source_root=root,
+    )
 
     # Validate in memory first, then validate the serialized temporary file
     # before replacing the configured output.
@@ -950,14 +1310,9 @@ def generate_graph(
         "unresolved_count": len(unresolved_nodes),
         "unresolved_nodes": unresolved_nodes,
     }
-    #TODO save graph_report
-    print(json.dumps(graph_report))
+    report_path = root / "generated" / "source_tree" / "dag_graph_report.json"
+    _save_graph_report(graph_report, report_path)
     return graph_report
-
-def get_graph_report() -> str :
-    # load file and return as JSON
-    return ""
-
 
 
 def _build_argument_parser() -> argparse.ArgumentParser:
@@ -985,6 +1340,14 @@ def _build_argument_parser() -> argparse.ArgumentParser:
         help=f"Graph output; default for the inferred source root is {DEFAULT_OUTPUT_PATH}",
     )
     parser.add_argument("--schema", default=None)
+    parser.add_argument(
+        "--fact-database",
+        default=None,
+        help=(
+            "Tree-sitter SQLite index; default for the inferred source root is "
+            f"{DEFAULT_FACT_DATABASE_PATH}"
+        ),
+    )
     return parser
 
 
@@ -996,11 +1359,12 @@ def main(argv: list[str] | None = None) -> int:
             input_glob=arguments.input_glob,
             output_path=arguments.output,
             schema_path=arguments.schema,
+            fact_database_path=arguments.fact_database,
         )
-    except (GraphGenerationError, GraphValidationError) as exc:
+    except (GraphGenerationError, GraphValidationError, sqlite3.Error) as exc:
         print(json.dumps({"error": str(exc)}, ensure_ascii=False, indent=2))
         return 1
-    #print(json.dumps(result, ensure_ascii=False, indent=2))
+    print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
 
 

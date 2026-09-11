@@ -1,27 +1,10 @@
-# -----------------------------------------------------------------------------
-# Overview
-# -----------------------------------------------------------------------------
-# Purpose: Define and build the trainable sequence-encoder topology.
-# DAG type: BUILD DAG; executed once during model initialization.
-# Inputs: Symbolic model input x_full.
-# Outputs: An executable encoder torch.nn.Module exposed as model.
-# Execution: PyTorch calls the built module directly during training/inference;
-#   DagProcessor is not on the hot path. Prediction heads and loss are defined
-#   separately by the prediction/loss DAG.
-#
-# Framework contract:
-#   inputs     = DAG/external data dependencies
-#   params     = literal operation semantics
-#   cfg_params = attributes resolved from runtime['cfg']
-#   runtime    = caller-supplied execution objects and configuration
-
 version: 1
 dag_id: model_structure
 
 nodes:
   # x_full -> t_emb
   - id: temporal_embedding
-    op: temporal_embedding
+    op: build_temporal_embedding
     inputs:
       fields:
         - x_full
@@ -32,7 +15,7 @@ nodes:
 
   # (x_full, t_emb) -> x_with_time
   - id: x_with_time
-    op: concat
+    op: build_concat
     inputs:
       fields:
         - x_full
@@ -42,14 +25,14 @@ nodes:
 
   # Build-time dimension: input_base_dim + time_emb_dim.
   - id: feature_corr_input_dim
-    op: add
+    op: add_numbers
     inputs: {}
     cfg_params:
       left: input_base_dim
       right: time_emb_dim
 
   - id: feature_corr_linear_1
-    op: linear_transform
+    op: build_linear_transform
     inputs:
       fields:
         - x_with_time
@@ -59,7 +42,7 @@ nodes:
       input_dim: feature_corr_input_dim
 
   - id: feature_corr_activation_1
-    op: activation
+    op: build_activation
     inputs:
       fields:
         - feature_corr_linear_1
@@ -67,7 +50,7 @@ nodes:
       activation_name: relu
 
   - id: feature_corr_dropout
-    op: dropout
+    op: build_dropout
     inputs:
       fields:
         - feature_corr_activation_1
@@ -75,7 +58,7 @@ nodes:
       dropout_rate: dropout
 
   - id: feature_corr_linear_2
-    op: linear_transform
+    op: build_linear_transform
     inputs:
       fields:
         - feature_corr_dropout
@@ -85,7 +68,7 @@ nodes:
       output_dim: combo_dim
 
   - id: sw_combo
-    op: activation
+    op: build_activation
     inputs:
       fields:
         - feature_corr_linear_2
@@ -94,7 +77,7 @@ nodes:
 
   # (x_full, t_emb, sw_combo) -> forward sequence stack
   - id: fwd_input
-    op: concat
+    op: build_concat
     inputs:
       fields:
         - x_full
@@ -105,7 +88,7 @@ nodes:
 
   # Build-time dimension: feature_corr_input_dim + combo_dim.
   - id: fwd_input_dim
-    op: add
+    op: add_numbers
     inputs: {}
     cfg_params:
       right: combo_dim
@@ -114,7 +97,7 @@ nodes:
 
   # Block 0: no residual.
   - id: fwd_gru_0
-    op: GRU
+    op: build_gru
     inputs:
       fields:
         - fwd_input
@@ -126,7 +109,7 @@ nodes:
       input_dim: fwd_input_dim
 
   - id: fwd_norm_0
-    op: LayerNorm
+    op: build_layer_norm
     inputs:
       fields:
         - fwd_gru_0
@@ -134,7 +117,7 @@ nodes:
       normalized_shape: hidden_dim
 
   - id: fwd_dropout_0
-    op: dropout
+    op: build_dropout
     inputs:
       fields:
         - fwd_norm_0
@@ -143,7 +126,7 @@ nodes:
 
   # Block 1: residual is explicit in the DAG.
   - id: fwd_gru_1
-    op: GRU
+    op: build_gru
     inputs:
       fields:
         - fwd_dropout_0
@@ -154,7 +137,7 @@ nodes:
       hidden_dim: hidden_dim
 
   - id: fwd_norm_1
-    op: LayerNorm
+    op: build_layer_norm
     inputs:
       fields:
         - fwd_gru_1
@@ -162,7 +145,7 @@ nodes:
       normalized_shape: hidden_dim
 
   - id: fwd_dropout_1
-    op: dropout
+    op: build_dropout
     inputs:
       fields:
         - fwd_norm_1
@@ -170,7 +153,7 @@ nodes:
       dropout_rate: dropout
 
   - id: fwd_residual_1
-    op: residual
+    op: build_residual
     inputs:
       x: fwd_dropout_1
       residual: fwd_dropout_0
@@ -180,7 +163,7 @@ nodes:
   # forward() returns that value directly. External inputs (x_full here) are
   # discovered from the symbolic dependency graph.
   - id: model_wrapper_node
-    op: root_model
+    op: build_root_model
     inputs:
       embeddings: fwd_residual_1
 

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any
 
 import torch
 import torch.nn as nn
@@ -246,10 +245,10 @@ class Scale(nn.Module):
         return x * self.factor
 
 
-@MODEL_BUILDER_REGISTRY.register("sequence_slice")
+@MODEL_BUILDER_REGISTRY.register("build_sequence_slice")
 def build_sequence_slice(inputs, params, runtime):
     return build_node(
-        op_name="sequence_slice",
+        op_name="build_sequence_slice",
         module=SequenceSlice(
             dim=int(params.get("dim", 1)),
             start=params.get("start"),
@@ -262,10 +261,10 @@ def build_sequence_slice(inputs, params, runtime):
     )
 
 
-@MODEL_BUILDER_REGISTRY.register("squeeze")
+@MODEL_BUILDER_REGISTRY.register("build_squeeze")
 def build_squeeze(inputs, params, runtime):
     return build_node(
-        op_name="squeeze",
+        op_name="build_squeeze",
         module=TensorSqueeze(dim=int(params["dim"])),
         inputs=inputs,
         params=params,
@@ -273,10 +272,10 @@ def build_squeeze(inputs, params, runtime):
     )
 
 
-@MODEL_BUILDER_REGISTRY.register("dict_field_slice")
+@MODEL_BUILDER_REGISTRY.register("build_dict_field_slice")
 def build_dict_field_slice(inputs, params, runtime):
     return build_node(
-        op_name="dict_field_slice",
+        op_name="build_dict_field_slice",
         module=DictFieldSlice(
             field=str(params["field"]),
             dim=int(params.get("dim", 1)),
@@ -290,10 +289,10 @@ def build_dict_field_slice(inputs, params, runtime):
     )
 
 
-@MODEL_BUILDER_REGISTRY.register("next_step_pair_mask")
+@MODEL_BUILDER_REGISTRY.register("build_next_step_pair_mask")
 def build_next_step_pair_mask(inputs, params, runtime):
     return build_node(
-        op_name="next_step_pair_mask",
+        op_name="build_next_step_pair_mask",
         module=NextStepPairMask(field=str(params.get("field", "mask"))),
         inputs=inputs,
         params=params,
@@ -301,10 +300,10 @@ def build_next_step_pair_mask(inputs, params, runtime):
     )
 
 
-@MODEL_BUILDER_REGISTRY.register("binary_fields_to_class")
+@MODEL_BUILDER_REGISTRY.register("build_binary_fields_to_class")
 def build_binary_fields_to_class(inputs, params, runtime):
     return build_node(
-        op_name="binary_fields_to_class",
+        op_name="build_binary_fields_to_class",
         module=BinaryFieldsToClass(
             fields=list(params["fields"]),
             weights=list(params["weights"]),
@@ -318,10 +317,10 @@ def build_binary_fields_to_class(inputs, params, runtime):
     )
 
 
-@MODEL_BUILDER_REGISTRY.register("stack_dict_fields")
+@MODEL_BUILDER_REGISTRY.register("build_stack_dict_fields")
 def build_stack_dict_fields(inputs, params, runtime):
     return build_node(
-        op_name="stack_dict_fields",
+        op_name="build_stack_dict_fields",
         module=StackDictFields(
             fields=list(params["fields"]),
             slice_dim=int(params.get("slice_dim", 1)),
@@ -335,10 +334,10 @@ def build_stack_dict_fields(inputs, params, runtime):
     )
 
 
-@MODEL_BUILDER_REGISTRY.register("masked_smooth_l1_mean")
+@MODEL_BUILDER_REGISTRY.register("build_masked_smooth_l1_mean")
 def build_masked_smooth_l1_mean(inputs, params, runtime):
     return build_node(
-        op_name="masked_smooth_l1_mean",
+        op_name="build_masked_smooth_l1_mean",
         module=MaskedSmoothL1Mean(epsilon=float(params.get("epsilon", 1e-6))),
         inputs=inputs,
         params=params,
@@ -346,10 +345,10 @@ def build_masked_smooth_l1_mean(inputs, params, runtime):
     )
 
 
-@MODEL_BUILDER_REGISTRY.register("masked_cross_entropy_mean")
+@MODEL_BUILDER_REGISTRY.register("build_masked_cross_entropy_mean")
 def build_masked_cross_entropy_mean(inputs, params, runtime):
     return build_node(
-        op_name="masked_cross_entropy_mean",
+        op_name="build_masked_cross_entropy_mean",
         module=MaskedCrossEntropyMean(
             class_dim=int(params.get("class_dim", -1)),
             epsilon=float(params.get("epsilon", 1e-6)),
@@ -360,10 +359,10 @@ def build_masked_cross_entropy_mean(inputs, params, runtime):
     )
 
 
-@MODEL_BUILDER_REGISTRY.register("masked_multilabel_bce_mean")
+@MODEL_BUILDER_REGISTRY.register("build_masked_multilabel_bce_mean")
 def build_masked_multilabel_bce_mean(inputs, params, runtime):
     return build_node(
-        op_name="masked_multilabel_bce_mean",
+        op_name="build_masked_multilabel_bce_mean",
         module=MaskedMultilabelBCEMean(
             label_dim=int(params.get("label_dim", -1)),
             epsilon=float(params.get("epsilon", 1e-6)),
@@ -374,7 +373,7 @@ def build_masked_multilabel_bce_mean(inputs, params, runtime):
     )
 
 
-@MODEL_BUILDER_REGISTRY.register("weighted_sum")
+@MODEL_BUILDER_REGISTRY.register("build_weighted_sum")
 def build_weighted_sum(inputs, params, runtime):
     input_names = set(inputs)
     expected_params = {f"{name}_weight" for name in input_names}
@@ -385,7 +384,7 @@ def build_weighted_sum(inputs, params, runtime):
         )
     weights = {name: params[f"{name}_weight"] for name in inputs}
     return build_node(
-        op_name="weighted_sum",
+        op_name="build_weighted_sum",
         module=WeightedSum(weights=weights),
         inputs=inputs,
         params=params,
@@ -393,12 +392,12 @@ def build_weighted_sum(inputs, params, runtime):
     )
 
 
-@MODEL_BUILDER_REGISTRY.register("scale")
+@MODEL_BUILDER_REGISTRY.register("build_scale")
 def build_scale(inputs, params, runtime):
     if set(params) != {"factor"}:
         raise ValueError("scale requires exactly one parameter: 'factor'")
     return build_node(
-        op_name="scale",
+        op_name="build_scale",
         module=Scale(factor=float(params["factor"])),
         inputs=inputs,
         params=params,

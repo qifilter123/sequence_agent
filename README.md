@@ -1,8 +1,10 @@
 # Sequence Agent
 
-Sequence Agent is a DAG-driven pipeline for sequence-pattern modeling, embedding analysis, clustering, and model diagnostics. The project is designed to support controlled model experimentation and automated diagnostic-agent reasoning without hard-coding the processing flow in orchestration scripts.
+Sequence Agent is a DAG-driven pipeline for sequence-pattern modeling, embedding analysis, clustering, and model diagnostics. \
+    The project is designed to support controlled model experimentation and automated diagnostic-agent reasoning without hard-coding the processing flow in orchestration scripts.
 
-This file provides stable, human-maintained project context. Detailed and frequently changing implementation behavior belongs in the DAG definitions and source code.
+This file provides stable, human-maintained project context. Detailed and frequently changing implementation behavior \
+    belongs in the DAG definitions and source code.
 
 ## Processing Flow
 
@@ -10,52 +12,44 @@ The project follows this high-level flow:
 
 1. Extract raw sequence fields.
 2. Transform raw fields into model features.
-3. Build and run the sequence model.
+3. Build and train the sequence model.
 4. Generate predictions and calculate training losses.
-5. Produce record-level embeddings.
-6. Build HDBSCAN clusters and centroids from embeddings.
-7. Evaluate new records against the built clusters.
-8. Collect diagnostic evidence for analysis and experimentation.
-
-Training and HDBSCAN inference share the same DAG-defined feature and model semantics.
+5. Save the trained model under `src/model_diagnostic/model/`.
+7. Build HDBSCAN clusters and centroids from embeddings from the trained model output embeddings.
+8. Evaluate new records against the built clusters.
+9. Collect diagnostic evidence for analysis and experimentation.
 
 ## DAG Definitions
 
 The project's DAG definitions are located under `src/model_diagnostic/config/`.
 
-The DAGs declare the processing topology, operation selection, inputs, parameters, and data lineage used by the training and inference pipelines. Each DAG should describe its own purpose and contract in its YAML file; those details are intentionally not duplicated here. Python source provides the implementations referenced by the DAGs.
+The DAGs defines the processing topology, operation selection, inputs, parameters, and data lineage used by the training and inference pipelines as YAML files.  
+Python source provides the implementations referenced by the DAGs.
 
 ## Source Organization
 
-The primary implementation is under `src/model_diagnostic/`:
+The primary implementation you should aware is under `src/model_diagnostic/`:
 
 | Path | Responsibility |
 | --- | --- |
 | `config/` | DAG definitions. |
 | `dag/` | Generic DAG processing and operation registries. |
 | `dag_ops/` | Feature, model, prediction/loss, and HDBSCAN DAG operations. |
-| `diagnostic/` | Diagnostic probes, registries, runtime support, and model-structure diagnostics. |
 | `model/` | Trained model artifacts produced by the training pipeline. |
 
-## Diagnostic Agent and MCP Runtime
+## Run projects
 
-The MCP server is the controlled runtime interface between the Diagnostic Agent and this project.
+### Entry points, manual run with python commands
 
-Human developers run the trainer and HDBSCAN inference scripts inside the project's Python virtual environment. The Diagnostic Agent does not activate that virtual environment or invoke internal Python modules directly. It calls the capabilities exposed by the MCP API and relies on the MCP server runtime, which imports the required project dependencies.
-
-Python package dependencies are declared in `requirements.md`. Dependency names and versions should be read from that file rather than duplicated in this README.
-
-## Run the Trainer
+#### Run the Trainer
 
 Activate the project Python virtual environment, then run from the project root:
-
 ```bash
 python src/model_diagnostic/model_trainer.py
 ```
-
 The command runs model training and saves the trained model artifact.
 
-## Run HDBSCAN Inference and Evaluation
+#### Run HDBSCAN Inference and Evaluation
 
 After a trained model is available, activate the same project Python virtual environment and run:
 
@@ -64,9 +58,12 @@ python src/model_diagnostic/inference_hbscan.py
 ```
 
 The script performs two stages:
-
 1. **Centroid build:** generate embeddings and build HDBSCAN clusters and centroid data.
 2. **Evaluation:** evaluate records against the clusters built in the first stage and produce diagnostic reports.
+
+### Run with MCP server
+
+Operations provided by "diagnostic-mcp"
 
 ## Context Collection Guidance
 

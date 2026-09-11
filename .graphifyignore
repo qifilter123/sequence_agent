@@ -1,0 +1,12 @@
+/*
+
+!/src/
+/src/*
+
+!/src/model_diagnostic/
+/src/model_diagnostic/*
+
+!/src/model_diagnostic/*.py
+
+!/src/model_diagnostic/dag/
+!/src/model_diagnostic/dag_ops/

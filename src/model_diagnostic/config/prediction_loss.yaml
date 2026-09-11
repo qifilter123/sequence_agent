@@ -1,27 +1,10 @@
-# -----------------------------------------------------------------------------
-# Overview
-# -----------------------------------------------------------------------------
-# Purpose: Define and build next-step prediction heads, target preparation,
-#   masking, component losses, and the combined training objective.
-# DAG type: BUILD DAG; executed once during model initialization.
-# Inputs: Symbolic encoder_output and raw feature mapping.
-# Outputs: An executable torch.nn.Module exposed as model, returning predictions
-#   and loss values when called.
-# Execution: PyTorch calls the built module directly in the training hot path.
-#
-# Framework contract:
-#   inputs     = DAG/external data dependencies
-#   params     = literal operation semantics
-#   cfg_params = attributes resolved from runtime['cfg']
-#   runtime    = caller-supplied execution objects and configuration
-
 version: 1
 dag_id: prediction_loss
 
 nodes:
   # Prediction input is encoder output at t; targets are the next step t+1.
   - id: nextstep_hidden
-    op: sequence_slice
+    op: build_sequence_slice
     inputs:
       fields:
         - encoder_output
@@ -31,7 +14,7 @@ nodes:
       end: -1
 
   - id: v_head
-    op: linear_transform
+    op: build_linear_transform
     inputs:
       fields:
         - nextstep_hidden
@@ -41,7 +24,7 @@ nodes:
       input_dim: hidden_dim
 
   - id: v_pred
-    op: squeeze
+    op: build_squeeze
     inputs:
       fields:
         - v_head
@@ -49,7 +32,7 @@ nodes:
       dim: -1
 
   - id: sw_head
-    op: linear_transform
+    op: build_linear_transform
     inputs:
       fields:
         - nextstep_hidden
@@ -58,7 +41,7 @@ nodes:
       output_dim: sw_classes
 
   - id: amt_head
-    op: linear_transform
+    op: build_linear_transform
     inputs:
       fields:
         - nextstep_hidden
@@ -68,7 +51,7 @@ nodes:
       input_dim: hidden_dim
 
   - id: amt_pred
-    op: squeeze
+    op: build_squeeze
     inputs:
       fields:
         - amt_head
@@ -76,7 +59,7 @@ nodes:
       dim: -1
 
   - id: is_new_head
-    op: linear_transform
+    op: build_linear_transform
     inputs:
       fields:
         - nextstep_hidden
@@ -86,14 +69,14 @@ nodes:
 
   # Target/mask preparation formerly owned by compute_nextstep_recon_loss().
   - id: nextstep_mask
-    op: next_step_pair_mask
+    op: build_next_step_pair_mask
     inputs:
       source: raw
     params:
       field: mask
 
   - id: v_target
-    op: dict_field_slice
+    op: build_dict_field_slice
     inputs:
       source: raw
     params:
@@ -102,7 +85,7 @@ nodes:
       start: 1
 
   - id: amt_target
-    op: dict_field_slice
+    op: build_dict_field_slice
     inputs:
       source: raw
     params:
@@ -111,7 +94,7 @@ nodes:
       start: 1
 
   - id: sw_target
-    op: binary_fields_to_class
+    op: build_binary_fields_to_class
     inputs:
       source: raw
     params:
@@ -121,7 +104,7 @@ nodes:
       start: 1
 
   - id: is_new_target
-    op: stack_dict_fields
+    op: build_stack_dict_fields
     inputs:
       source: raw
     params:
@@ -132,7 +115,7 @@ nodes:
 
   # Unweighted component losses, normalized by sum(mask) + 1e-6.
   - id: loss_v
-    op: masked_smooth_l1_mean
+    op: build_masked_smooth_l1_mean
     inputs:
       prediction: v_pred
       target: v_target
@@ -141,7 +124,7 @@ nodes:
       epsilon: 1.0e-6
 
   - id: loss_sw
-    op: masked_cross_entropy_mean
+    op: build_masked_cross_entropy_mean
     inputs:
       logits: sw_head
       target: sw_target
@@ -151,7 +134,7 @@ nodes:
       epsilon: 1.0e-6
 
   - id: loss_amt
-    op: masked_smooth_l1_mean
+    op: build_masked_smooth_l1_mean
     inputs:
       prediction: amt_pred
       target: amt_target
@@ -160,7 +143,7 @@ nodes:
       epsilon: 1.0e-6
 
   - id: loss_is_new
-    op: masked_multilabel_bce_mean
+    op: build_masked_multilabel_bce_mean
     inputs:
       logits: is_new_head
       target: is_new_target
@@ -170,7 +153,7 @@ nodes:
       epsilon: 1.0e-6
 
   - id: recon_loss
-    op: weighted_sum
+    op: build_weighted_sum
     inputs:
       v: loss_v
       sw: loss_sw
@@ -183,7 +166,7 @@ nodes:
       is_new_weight: lambda_is_new
 
   - id: total_loss
-    op: scale
+    op: build_scale
     inputs:
       fields:
         - recon_loss
@@ -191,7 +174,7 @@ nodes:
       factor: lambda_recon
 
   - id: model_wrapper_node
-    op: root_model
+    op: build_root_model
     inputs:
       loss: total_loss
       recon_loss: recon_loss

@@ -10,7 +10,11 @@
       "mcp__diagnostics__restart_session",
       "mcp__diagnostics__get_experiment_comparison",
       "mcp__diagnostics__evaluate_hdbscan",
-      "Bash(PYTHONPATH=src python *)"
+      "Bash(PYTHONPATH=src python *)",
+      "mcp__source-graph__query_by_label",
+      "mcp__source-graph__query_targets_by_source_id",
+      "mcp__source-graph__ts_query_text",
+      "mcp__source-graph__query_by_id"
     ]
   },
   "enableAllProjectMcpServers": true,

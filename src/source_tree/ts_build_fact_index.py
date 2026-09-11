@@ -8,11 +8,11 @@ import os
 from pathlib import Path
 from typing import Sequence
 
-from .fact_store import FactStoreError, build_fact_database
-
+from source_tree.ts_fact_store import FactStoreError, build_fact_database
 
 PACKAGE_ROOT = Path(__file__).resolve().parent
-GENERATED_ROOT = PACKAGE_ROOT / "generated"
+SOURCE_ROOT = PACKAGE_ROOT.parent
+GENERATED_ROOT = SOURCE_ROOT / "generated" / "ts_source_tree"
 
 
 def _parser() -> argparse.ArgumentParser:

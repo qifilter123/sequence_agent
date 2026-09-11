@@ -3,6 +3,13 @@
     "diagnostics": {
       "type": "stdio",
       "command": "C:\\projec\\pycharm_projects\\venv-2\\Scripts\\diagnostic-mcp.exe"
+    },
+    "source-graph": {
+      "type": "stdio",
+      "command": "C:\\projec\\pycharm_projects\\venv-2\\Scripts\\source-graph-mcp.exe",
+      "env": {
+        "DAG_GRAPH_LOCATION": "C:\\projec\\pycharm_projects\\poc\\sequence_agent\\src\\generated\\source_tree"
+      }
     }
   }
 }

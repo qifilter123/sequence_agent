@@ -179,7 +179,7 @@ def _resolve_runtime_refs(spec: Any, values: dict[str, Any]) -> Any:
 # ---------------------------------------------------------------------------
 
 
-@MODEL_BUILDER_REGISTRY.register("add")
+@MODEL_BUILDER_REGISTRY.register("add_numbers")
 def add_numbers(inputs, params, runtime):
     """Build-time binary numeric addition for derived model parameters."""
     del runtime
@@ -196,14 +196,14 @@ def add_numbers(inputs, params, runtime):
     return left + right
 
 
-@MODEL_BUILDER_REGISTRY.register("temporal_embedding")
+@MODEL_BUILDER_REGISTRY.register("build_temporal_embedding")
 def build_temporal_embedding(inputs, params, runtime):
     module = ContinuousTimeEmbedding(
         out_dim=int(params["out_dim"]),
         source_index=int(params.get("source_index", 0)),
     )
     return build_node(
-        op_name="temporal_embedding",
+        op_name="build_temporal_embedding",
         module=module,
         inputs=inputs,
         params=params,
@@ -211,7 +211,7 @@ def build_temporal_embedding(inputs, params, runtime):
     )
 
 
-@MODEL_BUILDER_REGISTRY.register("linear_transform")
+@MODEL_BUILDER_REGISTRY.register("build_linear_transform")
 def build_linear_transform(inputs, params, runtime):
     module = nn.Linear(
         int(params["input_dim"]),
@@ -219,7 +219,7 @@ def build_linear_transform(inputs, params, runtime):
         bias=bool(params.get("bias", True)),
     )
     return build_node(
-        op_name="linear_transform",
+        op_name="build_linear_transform",
         module=module,
         inputs=inputs,
         params=params,
@@ -227,7 +227,7 @@ def build_linear_transform(inputs, params, runtime):
     )
 
 
-@MODEL_BUILDER_REGISTRY.register("activation")
+@MODEL_BUILDER_REGISTRY.register("build_activation")
 def build_activation(inputs, params, runtime):
     name = str(params.get("activation_name", "relu")).lower()
     builders = {
@@ -239,7 +239,7 @@ def build_activation(inputs, params, runtime):
     if name not in builders:
         raise ValueError(f"Unsupported activation_name '{name}'")
     return build_node(
-        op_name="activation",
+        op_name="build_activation",
         module=builders[name](),
         inputs=inputs,
         params=params,
@@ -247,10 +247,10 @@ def build_activation(inputs, params, runtime):
     )
 
 
-@MODEL_BUILDER_REGISTRY.register("dropout")
+@MODEL_BUILDER_REGISTRY.register("build_dropout")
 def build_dropout(inputs, params, runtime):
     return build_node(
-        op_name="dropout",
+        op_name="build_dropout",
         module=nn.Dropout(float(params["dropout_rate"])),
         inputs=inputs,
         params=params,
@@ -258,7 +258,7 @@ def build_dropout(inputs, params, runtime):
     )
 
 
-@MODEL_BUILDER_REGISTRY.register("GRU")
+@MODEL_BUILDER_REGISTRY.register("build_gru")
 def build_gru(inputs, params, runtime):
     module = GRUTransform(
         input_dim=int(params["input_dim"]),
@@ -268,7 +268,7 @@ def build_gru(inputs, params, runtime):
         bidirectional=bool(params.get("bidirectional", False)),
     )
     return build_node(
-        op_name="GRU",
+        op_name="build_gru",
         module=module,
         inputs=inputs,
         params=params,
@@ -276,10 +276,10 @@ def build_gru(inputs, params, runtime):
     )
 
 
-@MODEL_BUILDER_REGISTRY.register("LayerNorm")
+@MODEL_BUILDER_REGISTRY.register("build_layer_norm")
 def build_layer_norm(inputs, params, runtime):
     return build_node(
-        op_name="LayerNorm",
+        op_name="build_layer_norm",
         module=nn.LayerNorm(int(params["normalized_shape"])),
         inputs=inputs,
         params=params,
@@ -287,10 +287,10 @@ def build_layer_norm(inputs, params, runtime):
     )
 
 
-@MODEL_BUILDER_REGISTRY.register("concat")
+@MODEL_BUILDER_REGISTRY.register("build_concat")
 def build_concat(inputs, params, runtime):
     return build_node(
-        op_name="concat",
+        op_name="build_concat",
         module=TensorConcat(dim=int(params.get("dim", -1))),
         inputs=inputs,
         params=params,
@@ -298,10 +298,10 @@ def build_concat(inputs, params, runtime):
     )
 
 
-@MODEL_BUILDER_REGISTRY.register("residual")
+@MODEL_BUILDER_REGISTRY.register("build_residual")
 def build_residual(inputs, params, runtime):
     return build_node(
-        op_name="residual",
+        op_name="build_residual",
         module=ResidualAdd(),
         inputs=inputs,
         params=params,
@@ -309,7 +309,7 @@ def build_residual(inputs, params, runtime):
     )
 
 
-@MODEL_BUILDER_REGISTRY.register("root_model")
+@MODEL_BUILDER_REGISTRY.register("build_root_model")
 def build_root_model(inputs, params, runtime):
     """Compile the symbolic graph into the final executable nn.Module.
 
