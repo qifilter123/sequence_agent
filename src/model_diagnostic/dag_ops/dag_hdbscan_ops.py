@@ -87,6 +87,7 @@ def generate_anchored_dataset(inputs, params, runtime):
     del inputs
     model_cfg = _require_runtime(runtime, "model_cfg")
     num_trx = _require_positive_int(params, "num_trx")
+
     data = seq_gen.make_anchored_dataset(current_cfg=model_cfg, num_trx=num_trx)
     if not isinstance(data, dict):
         raise TypeError("make_anchored_dataset must return a dictionary")
@@ -151,7 +152,7 @@ def extract_record_embeddings(inputs, params, runtime):
         "seq_sw_ip": _as_numpy(data["sw_ip"]),
         "seq_sw_email": _as_numpy(data["sw_email"]),
         "seq_sw_fp": _as_numpy(data["sw_fp"]),
-        "seq_sw_bill": _as_numpy(data["sw_bill"]),
+        "seq_sw_bca": _as_numpy(data["sw_bca"]),
         "seq_sw_ship": _as_numpy(data["sw_ship"]),
         "rec_anchor_type": _as_numpy(data["anchor_type"], dtype=np.int64),
         "rec_valid_len": _as_numpy(data["valid_len"], dtype=np.int64),
@@ -189,7 +190,7 @@ def apply_record_length_gate(inputs, params, runtime):
 
     current_scenarios = result["trx_scenario"]
     result["cid_is_anom"] = np.array(
-        [1 if seq_gen._is_anomaly(sc) else 0 for sc in current_scenarios],
+        [1 if seq_gen.is_anomaly(sc) else 0 for sc in current_scenarios],
         dtype=np.int32,
     )
     return result
@@ -376,8 +377,8 @@ def fraud_centroid_alignment(inputs, params, runtime):
             {
                 "scenario": str(scenario),
                 "n": int(mask.sum()),
-                "is_fraud": bool(seq_gen._is_anomaly(scenario)),
-                "role": "detect" if seq_gen._is_anomaly(scenario) else "FP-rate",
+                "is_fraud": bool(seq_gen.is_anomaly(scenario)),
+                "role": "detect" if seq_gen.is_anomaly(scenario) else "FP-rate",
                 "alignment_rate": float(txn_aligned[mask].mean()),
             }
         )
@@ -482,7 +483,7 @@ def binary_score_metrics(inputs, params, runtime):
         mask = scenarios == scenario
         if not mask.any():
             continue
-        is_fraud = bool(seq_gen._is_anomaly(scenario))
+        is_fraud = bool(seq_gen.is_anomaly(scenario))
         per_scenario.append(
             {
                 "scenario": str(scenario),

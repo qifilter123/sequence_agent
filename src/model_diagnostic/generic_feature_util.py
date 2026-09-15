@@ -97,7 +97,7 @@ def combine_sw(targets):
             targets["sw_ip"] * 16 +
             targets["sw_email"] * 8 +
             targets["sw_fp"] * 4 +
-            targets["sw_bill"] * 2 +
+            targets["sw_bca"] * 2 +
             targets["sw_ship"] * 1
     ).long()
     return target_class
@@ -111,7 +111,7 @@ def combine_is_new(raw_targets):
         raw_targets["is_new_ip"][:, 1:],
         raw_targets["is_new_email"][:, 1:],
         raw_targets["is_new_fp"][:, 1:],
-        raw_targets["is_new_bill"][:, 1:],
+        raw_targets["is_new_bca"][:, 1:],
         raw_targets["is_new_ship"][:, 1:]
     ], dim=-1)
 

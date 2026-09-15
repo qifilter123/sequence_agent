@@ -182,7 +182,7 @@ def train_internal(
     current_model,
     probe: Optional[DiagnosticProbeManager] = None,
 ):
-    print("Generating anchored training data (gen_anchored_dataset)...")
+    print("Generating anchored training data (make_anchored_dataset)...")
     train_data = seq_gen.make_anchored_dataset(
         current_cfg=current_cfg,
         num_trx=current_cfg.num_trx

@@ -45,17 +45,24 @@ mcp = MCPServer(
     "diagnostics",
     instructions=(
         "Stateful PyTorch training diagnostics with controlled experiments. "
-        "CFG2.get_tunable_parameters() is the authoritative tuning boundary; call "
-        "get_tunable_parameters before planning experiments. initialize_session starts "
+        "CFG2.get_tunable_parameters() and the DAG path fields returned by "
+        "get_tunable_parameters are the authoritative experiment boundary; call that "
+        "tool before planning experiments. initialize_session starts "
         "the default CFG2 baseline and NEVER creates previous experiment evidence. "
         "Only restart_session may publish PREVIOUS_CFG2/PREVIOUS_METRICS/"
         "PREVIOUS_STRUCTURE/PREVIOUS_EVALUATION, and only after it successfully replaces an active "
         "session. Before that first successful replacement, there is no previous "
-        "experiment and no valid A/B comparison. restart_session changes only CFG2 "
-        "tunables and creates a fresh model, optimizer, dataset, probe set, and metric "
-        "registry. Never modify fixed CFG fields, diagnostic config location, "
-        "trainer/model source code, or other source files. If evidence suggests such "
-        "a change, recommend it in the final report instead of applying it. Use bounded "
+        "experiment and no valid A/B comparison. restart_session may change CFG2 "
+        "tunables and/or select candidate YAML files for any executable DAG; it creates "
+        "a fresh model, optimizer, dataset, probe set, and metric registry. For a "
+        "structure experiment, first learn the baseline from the source-graph MCP, form "
+        "one evidence-based hypothesis, copy the affected baseline DAG YAML to a candidate "
+        "file, edit only that candidate YAML, and pass its path to restart_session. Do not "
+        "query the source-graph MCP for candidate topology because it indexes the baseline; "
+        "use the candidate YAML plus runtime build, probe, training, and evaluation evidence. "
+        "Never modify fixed non-DAG CFG fields or Python source code. Prefer one changed DAG "
+        "per experiment, preserve the baseline YAML, and do not accept a candidate that fails "
+        "DAG validation or runtime construction. Use bounded "
         "current/previous metric queries and get_experiment_comparison for A/B evidence. "
         "Use evaluate_hdbscan for downstream embedding/anomaly evaluation of the active "
         "in-memory model; evaluate before restart if the result should become previous "
@@ -69,7 +76,7 @@ mcp = MCPServer(
 
 @mcp.tool()
 def get_tunable_parameters() -> Dict[str, Any]:
-    """Return the authoritative CFG2 parameter allowlist for agent experiments."""
+    """Return authoritative CFG2 tunables and executable DAG path fields."""
     return _transport_safe(runtime.get_tunable_parameters())
 
 
@@ -92,7 +99,7 @@ def initialize_session() -> Dict[str, Any]:
 
 @mcp.tool()
 def restart_session(overrides: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """Start a fresh controlled experiment from CFG2 defaults plus overrides.
+    """Start a fresh experiment from defaults plus CFG2/DAG-path overrides.
 
     PREVIOUS_* mirrors are refreshed only after runtime.restart_session returns
     successfully. A failed restart therefore cannot publish the terminated
@@ -201,7 +208,7 @@ def get_previous_evaluation() -> Dict[str, Any]:
 
 @mcp.tool()
 def evaluate_hdbscan() -> Dict[str, Any]:
-    """Evaluate the active in-memory model with the fixed two-phase HDBSCAN scorer."""
+    """Evaluate the active model with its selected two-phase HDBSCAN DAGs."""
     return _transport_safe(runtime.evaluate_hdbscan())
 
 

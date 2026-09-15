@@ -19,12 +19,16 @@ except ImportError:  # Allows direct execution during development.
 
 DAG_GRAPH_LOCATION_ENV = "DAG_GRAPH_LOCATION"
 GRAPH_FILENAME = "dag_graph.json"
+PROJECT_GRAPH_EXTENSION_PATH_ENV = "PROJECT_GRAPH_EXTENSION_PATH"
+PROJECT_GRAPH_EXTENSION_FILENAME = "project_graph_extension.json"
 _TS_QUERY_LIMIT = 50
 
 _INVERSE_RELATIONS = {
     "uses": "is_used_by",
     "contains": "is_contained_by",
     "references": "is_referenced_by",
+    "has_intent": "is_intent_of",
+    "has_behavior": "is_behavior_of",
 }
 
 _TOOL_NAMES = [
@@ -43,6 +47,7 @@ class GraphServerInitializationError(RuntimeError):
 @dataclass(frozen=True)
 class _GraphIndex:
     graph_path: Path
+    loaded_graph_paths: tuple[Path, ...]
     nodes_by_id: dict[str, dict[str, Any]]
     nodes_by_label: dict[str, tuple[dict[str, Any], ...]]
     sources_by_target: dict[str, tuple[tuple[str, str], ...]]
@@ -68,13 +73,19 @@ def _json(value: Any) -> str:
     )
 
 
-def _load_graph(graph_path: Path) -> _GraphIndex:
+def _read_graph(graph_path: Path) -> dict[str, list[Any]] | None:
     try:
-        graph = json.loads(graph_path.read_text(encoding="utf-8"))
+        content = graph_path.read_text(encoding="utf-8")
     except OSError as exc:
         raise GraphServerInitializationError(
             f"Cannot read DAG graph {graph_path}: {exc}"
         ) from exc
+
+    if not content.strip():
+        return None
+
+    try:
+        graph = json.loads(content)
     except json.JSONDecodeError as exc:
         raise GraphServerInitializationError(
             f"DAG graph is not valid JSON: {graph_path}: {exc}"
@@ -82,83 +93,104 @@ def _load_graph(graph_path: Path) -> _GraphIndex:
 
     if not isinstance(graph, dict) or set(graph) != {"nodes", "links"}:
         raise GraphServerInitializationError(
-            "DAG graph must be an object with exactly 'nodes' and 'links'"
+            f"DAG graph {graph_path} must be an object with exactly "
+            "'nodes' and 'links'"
         )
     nodes = graph["nodes"]
     links = graph["links"]
     if not isinstance(nodes, list) or not isinstance(links, list):
         raise GraphServerInitializationError(
-            "DAG graph nodes and links must both be arrays"
+            f"DAG graph {graph_path} nodes and links must both be arrays"
         )
+
+    if not nodes and not links:
+        return None
+    return graph
+
+
+def _load_graph(graph_path: Path, extension_path: Path | None = None) -> _GraphIndex:
+    graph_paths = (graph_path,) + (
+        (extension_path,) if extension_path is not None else ()
+    )
+    loaded_graphs: list[tuple[Path, dict[str, list[Any]]]] = []
+    for candidate_path in graph_paths:
+        graph = _read_graph(candidate_path)
+        if graph is not None:
+            loaded_graphs.append((candidate_path, graph))
 
     nodes_by_id: dict[str, dict[str, Any]] = {}
     labels: dict[str, list[dict[str, Any]]] = {}
-    for position, node in enumerate(nodes):
-        if not isinstance(node, dict):
-            raise GraphServerInitializationError(
-                f"nodes[{position}] must be an object"
-            )
-        node_id = node.get("id")
-        if not isinstance(node_id, str) or not node_id:
-            raise GraphServerInitializationError(
-                f"nodes[{position}].id must be a non-empty string"
-            )
-        if node_id in nodes_by_id:
-            raise GraphServerInitializationError(f"Duplicate node id: {node_id}")
-        stored_node = dict(node)
-        nodes_by_id[node_id] = stored_node
-
-        label = node.get("label")
-        if label is not None:
-            if not isinstance(label, str) or not label:
+    for source_path, graph in loaded_graphs:
+        for position, node in enumerate(graph["nodes"]):
+            if not isinstance(node, dict):
                 raise GraphServerInitializationError(
-                    f"Node {node_id} has an invalid label"
+                    f"{source_path}: nodes[{position}] must be an object"
                 )
-            labels.setdefault(label, []).append(stored_node)
+            node_id = node.get("id")
+            if not isinstance(node_id, str) or not node_id:
+                raise GraphServerInitializationError(
+                    f"{source_path}: nodes[{position}].id must be a non-empty string"
+                )
+            if node_id in nodes_by_id:
+                raise GraphServerInitializationError(f"Duplicate node id: {node_id}")
+            stored_node = dict(node)
+            nodes_by_id[node_id] = stored_node
+
+            label = node.get("label")
+            if label is not None:
+                if not isinstance(label, str) or not label:
+                    raise GraphServerInitializationError(
+                        f"Node {node_id} has an invalid label"
+                    )
+                labels.setdefault(label, []).append(stored_node)
 
     sources: dict[str, list[tuple[str, str]]] = {}
     targets: dict[str, list[tuple[str, str]]] = {}
     seen_links: set[tuple[str, str, str]] = set()
-    for position, link in enumerate(links):
-        if not isinstance(link, dict) or set(link) != {
-            "source",
-            "target",
-            "relation",
-        }:
-            raise GraphServerInitializationError(
-                f"links[{position}] must contain exactly source, target, relation"
-            )
-        source = link["source"]
-        target = link["target"]
-        relation = link["relation"]
-        if not all(
-            isinstance(value, str) and value
-            for value in (source, target, relation)
-        ):
-            raise GraphServerInitializationError(
-                f"links[{position}] values must be non-empty strings"
-            )
-        if source not in nodes_by_id:
-            raise GraphServerInitializationError(
-                f"links[{position}].source does not exist: {source}"
-            )
-        if target not in nodes_by_id:
-            raise GraphServerInitializationError(
-                f"links[{position}].target does not exist: {target}"
-            )
-        if relation not in _INVERSE_RELATIONS:
-            raise GraphServerInitializationError(
-                f"links[{position}] has unsupported relation: {relation}"
-            )
-        triple = (source, relation, target)
-        if triple in seen_links:
-            raise GraphServerInitializationError(f"Duplicate link: {triple}")
-        seen_links.add(triple)
-        sources.setdefault(target, []).append((source, relation))
-        targets.setdefault(source, []).append((target, relation))
+    for source_path, graph in loaded_graphs:
+        for position, link in enumerate(graph["links"]):
+            if not isinstance(link, dict) or set(link) != {
+                "source",
+                "target",
+                "relation",
+            }:
+                raise GraphServerInitializationError(
+                    f"{source_path}: links[{position}] must contain exactly "
+                    "source, target, relation"
+                )
+            source = link["source"]
+            target = link["target"]
+            relation = link["relation"]
+            if not all(
+                isinstance(value, str) and value
+                for value in (source, target, relation)
+            ):
+                raise GraphServerInitializationError(
+                    f"{source_path}: links[{position}] values must be non-empty strings"
+                )
+            if source not in nodes_by_id:
+                raise GraphServerInitializationError(
+                    f"{source_path}: links[{position}].source does not exist: {source}"
+                )
+            if target not in nodes_by_id:
+                raise GraphServerInitializationError(
+                    f"{source_path}: links[{position}].target does not exist: {target}"
+                )
+            if relation not in _INVERSE_RELATIONS:
+                raise GraphServerInitializationError(
+                    f"{source_path}: links[{position}] has unsupported relation: "
+                    f"{relation}"
+                )
+            triple = (source, relation, target)
+            if triple in seen_links:
+                raise GraphServerInitializationError(f"Duplicate link: {triple}")
+            seen_links.add(triple)
+            sources.setdefault(target, []).append((source, relation))
+            targets.setdefault(source, []).append((target, relation))
 
     return _GraphIndex(
         graph_path=graph_path,
+        loaded_graph_paths=tuple(path for path, _ in loaded_graphs),
         nodes_by_id=nodes_by_id,
         nodes_by_label={
             label: tuple(matching_nodes)
@@ -172,7 +204,7 @@ def _load_graph(graph_path: Path) -> _GraphIndex:
             node_id: tuple(outgoing)
             for node_id, outgoing in targets.items()
         },
-        link_count=len(links),
+        link_count=len(seen_links),
     )
 
 
@@ -199,7 +231,31 @@ def _load_graph_from_environment() -> _GraphIndex:
         raise GraphServerInitializationError(
             f"DAG graph file does not exist: {graph_path}"
         )
-    return _load_graph(graph_path)
+
+    configured_extension = os.environ.get(PROJECT_GRAPH_EXTENSION_PATH_ENV)
+    if configured_extension:
+        extension_path = Path(configured_extension).expanduser()
+        if not extension_path.is_absolute():
+            raise GraphServerInitializationError(
+                f"{PROJECT_GRAPH_EXTENSION_PATH_ENV} must be an absolute file path: "
+                f"{configured_extension}"
+            )
+        extension_path = extension_path.resolve()
+        if not extension_path.is_file():
+            raise GraphServerInitializationError(
+                f"Project graph extension file does not exist: {extension_path}"
+            )
+    else:
+        default_extension_path = (
+            location.parent / "context" / PROJECT_GRAPH_EXTENSION_FILENAME
+        )
+        extension_path = (
+            default_extension_path.resolve()
+            if default_extension_path.is_file()
+            else None
+        )
+
+    return _load_graph(graph_path, extension_path)
 
 
 def _initialize_graph() -> _GraphIndex:
@@ -240,8 +296,9 @@ def query_sources_by_target_id(id: str) -> str:
     """Return nodes with links whose target is ``id`` as a JSON array.
 
     Each result is a copy of the source node plus the original forward link
-    relation: ``uses``, ``contains``, or ``references``. For example, if a
-    DAG_NODE contains the queried INPUT_MAP, the returned DAG_NODE has
+    relation, including ``uses``, ``contains``, ``references``,
+    ``has_intent``, or ``has_behavior``. For example, if a DAG_NODE contains
+    the queried INPUT_MAP, the returned DAG_NODE has
     ``"relation":"contains"``. An unknown ID or no incoming links returns
     ``[]``.
     """
@@ -261,10 +318,11 @@ def query_targets_by_source_id(id: str) -> str:
 
     Each result is a copy of the target node plus the inverse relation from the
     returned target's perspective: ``uses`` becomes ``is_used_by``,
-    ``contains`` becomes ``is_contained_by``, and ``references`` becomes
-    ``is_referenced_by``. For example, an INPUT_MAP contained by the queried
-    DAG_NODE has ``"relation":"is_contained_by"``. An unknown ID or no
-    outgoing links returns ``[]``.
+    ``contains`` becomes ``is_contained_by``, ``references`` becomes
+    ``is_referenced_by``, ``has_intent`` becomes ``is_intent_of``, and
+    ``has_behavior`` becomes ``is_behavior_of``. For example, an INPUT_MAP
+    contained by the queried DAG_NODE has ``"relation":"is_contained_by"``.
+    An unknown ID or no outgoing links returns ``[]``.
     """
 
     source_id = _require_non_empty(id, name="id")
@@ -378,6 +436,9 @@ def main(argv: list[str] | None = None) -> int:
                 _json(
                     {
                         "graph_path": str(index.graph_path),
+                        "loaded_graph_paths": [
+                            str(path) for path in index.loaded_graph_paths
+                        ],
                         "link_count": index.link_count,
                         "node_count": len(index.nodes_by_id),
                         "status": "ok",

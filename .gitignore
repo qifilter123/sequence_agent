@@ -9,3 +9,4 @@ src/model_diagnostic.egg-info/
 src/source_tree/generated
 src/doc
 src/generated/
+src/model_diagnostic/config/candidates/

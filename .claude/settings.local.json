@@ -14,7 +14,8 @@
       "mcp__source-graph__query_by_label",
       "mcp__source-graph__query_targets_by_source_id",
       "mcp__source-graph__ts_query_text",
-      "mcp__source-graph__query_by_id"
+      "mcp__source-graph__query_by_id",
+      "mcp__source-graph__query_sources_by_target_id"
     ]
   },
   "enableAllProjectMcpServers": true,

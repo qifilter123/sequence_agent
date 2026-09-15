@@ -89,7 +89,7 @@ nodes:
   # Build-time dimension: feature_corr_input_dim + combo_dim.
   - id: fwd_input_dim
     op: add_numbers
-    inputs: {}
+    inputs: {} #Place holder, no inputs neded
     cfg_params:
       right: combo_dim
     derived_params:

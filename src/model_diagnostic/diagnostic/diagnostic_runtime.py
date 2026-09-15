@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 import copy
-import json
+import hashlib
 import os
-import re
 import sys
 import threading
 import time
@@ -21,8 +20,6 @@ from model_diagnostic import inference_hbscan as hdbscan_eval
 from model_diagnostic import generic_seq_generator as seq_gen
 from model_diagnostic.cfg_base import CFG2
 from model_diagnostic.diagnostic.diagnostic_registry import DiagnosticRegistry
-from model_diagnostic.diagnostic.diagnostic_model_structure import render_model_structure
-from model_diagnostic.diagnostic.diagnostic_probe_manager import DiagnosticProbeManager
 
 class DiagnosticRuntimeError(RuntimeError):
     """Raised when a diagnostic runtime operation is not valid for its state."""
@@ -42,9 +39,10 @@ class DiagnosticRuntime:
       * DiagnosticRegistry history
       * monotonic diagnostic step counter
 
-    Probe policy is loaded from CFG.diagnostic_config_path. The agent may only
-    vary CFG2-declared experiment parameters; source code and fixed CFG values
-    remain outside the MCP write surface.
+    Probe stages are discovered directly from the DAG-built model. The agent may
+    vary CFG2-declared experiment parameters and select candidate YAML files for
+    each executable DAG. Source code and fixed non-DAG CFG values remain outside
+    the MCP write surface.
     """
 
     MAX_STEPS_PER_SEGMENT = 6000
@@ -58,16 +56,27 @@ class DiagnosticRuntime:
         "DIAGNOSTIC_SEED": ("seed", int),
     }
 
+    _DAG_PATH_SPECS = {
+        "input_extractor_path": ("input_extractor.yaml", "input_extractor"),
+        "input_transformer_path": ("input_transformer.yaml", "input_transformer"),
+        "model_structure_path": ("model_structure.yaml", "model_structure"),
+        "prediction_loss_path": ("prediction_loss.yaml", "prediction_loss"),
+        "hdbscan_centroid_build_path": (
+            "hdbscan_centroid_build.yaml",
+            "hdbscan_centroid_build",
+        ),
+        "hdbscan_evaluation_path": (
+            "hdbscan_evaluation.yaml",
+            "hdbscan_evaluation",
+        ),
+    }
+
     def __init__(
         self,
         *,
         config_overrides: Optional[Mapping[str, Any]] = None,
     ) -> None:
         self._lock = threading.RLock()
-
-        # Diagnostic policy location is a fixed CFG contract. It is resolved
-        # from the concrete session cfg, never from MCP arguments or env vars.
-        self.diagnostic_config_path: Optional[Path] = None
 
         self._config_overrides = dict(config_overrides or {})
         self._validate_config_overrides(self._config_overrides)
@@ -88,6 +97,7 @@ class DiagnosticRuntime:
         self.train_data: Optional[Dict[str, Any]] = None
         self.txn_index: Optional[Dict[int, List[int]]] = None
         self.structure: Optional[Dict[str, Any]] = None
+        self.dag_paths: Optional[Dict[str, Dict[str, str]]] = None
 
         self._training_record_count = 0
         self._transaction_count = 0
@@ -99,6 +109,7 @@ class DiagnosticRuntime:
         self.previous_metrics: Optional[Dict[str, Any]] = None
         self.previous_session: Optional[Dict[str, Any]] = None
         self.previous_structure: Optional[Dict[str, Any]] = None
+        self.previous_dag_paths: Optional[Dict[str, Dict[str, str]]] = None
 
         # Downstream evaluation belongs to the experiment snapshot just like
         # CFG2/metrics/structure. Only the most recent evaluation per session is kept.
@@ -141,13 +152,15 @@ class DiagnosticRuntime:
                 return result
 
             cfg = self._build_effective_cfg(restart_overrides=None)
-            candidate = self._build_session_candidate(cfg)
+            dag_paths = self._build_effective_dag_paths(restart_overrides=None)
+            candidate = self._build_session_candidate(cfg, dag_paths)
             self._commit_session_candidate(candidate)
 
             self.previous_cfg2 = None
             self.previous_metrics = None
             self.previous_session = None
             self.previous_structure = None
+            self.previous_dag_paths = None
             self.previous_evaluation = None
 
             result = self._session_summary()
@@ -156,7 +169,7 @@ class DiagnosticRuntime:
             return result
 
     def get_tunable_parameters(self) -> Dict[str, Any]:
-        """Return the exact CFG2 fields the agent may override.
+        """Return CFG2 tunables and executable DAG paths the agent may override.
 
         The allowlist comes directly from CFG2.get_tunable_parameters(),
         which is the single source of truth for agent-overridable parameters.
@@ -178,26 +191,51 @@ class DiagnosticRuntime:
                     "current": current_safe,
                 })
 
+            dag_paths = (
+                copy.deepcopy(self.dag_paths)
+                if self.initialized and self.dag_paths is not None
+                else self._build_effective_dag_paths(restart_overrides=None)
+            )
+            dag_parameters = [
+                {
+                    "name": name,
+                    "type": "string",
+                    "default": str(self._default_dag_path(name)),
+                    "current": dag_paths[name]["path"],
+                    "expected_dag_id": expected_dag_id,
+                }
+                for name, (_, expected_dag_id) in self._DAG_PATH_SPECS.items()
+            ]
+
             return {
                 "source_of_truth": "CFG2.get_tunable_parameters()",
                 "count": len(parameters),
                 "parameters": parameters,
+                "dag_path_source_of_truth": "DiagnosticRuntime._DAG_PATH_SPECS",
+                "dag_path_count": len(dag_parameters),
+                "dag_path_parameters": dag_parameters,
+                "dag_structure_modification_allowed": True,
+                "dag_candidate_files_must_exist_before_restart": True,
                 "fixed_cfg_overrides_allowed": False,
                 "source_code_modification_allowed": False,
             }
 
     def restart_session(self, overrides: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
-        """Replace the active session with a fresh controlled CFG2 experiment.
+        """Replace the active session with a fresh CFG2 and/or DAG experiment.
 
         PREVIOUS_* is published only after a new session is created successfully.
         If there is no active predecessor, the call starts a fresh overridden
-        session but comparison remains unavailable.
+        session but comparison remains unavailable. DAG path overrides select
+        already-written candidate YAML files; this runtime never edits source files.
         """
         with self._lock:
             normalized_overrides = dict(overrides or {})
             self._validate_restart_overrides(normalized_overrides)
 
             candidate_cfg = self._build_effective_cfg(
+                restart_overrides=normalized_overrides,
+            )
+            candidate_dag_paths = self._build_effective_dag_paths(
                 restart_overrides=normalized_overrides,
             )
 
@@ -210,6 +248,7 @@ class DiagnosticRuntime:
             prior_metrics = self.registry.snapshot() if had_active else None
             prior_session = self._session_summary() if had_active else None
             prior_structure = copy.deepcopy(self.structure) if had_active else None
+            prior_dag_paths = copy.deepcopy(self.dag_paths) if had_active else None
             prior_evaluation = (
                 copy.deepcopy(self.current_evaluation)
                 if had_active
@@ -221,7 +260,10 @@ class DiagnosticRuntime:
             if had_active:
                 self._terminate_current_session()
 
-            candidate = self._build_session_candidate(candidate_cfg)
+            candidate = self._build_session_candidate(
+                candidate_cfg,
+                candidate_dag_paths,
+            )
             self._commit_session_candidate(candidate)
 
             if had_active and prior_session is not None:
@@ -229,12 +271,14 @@ class DiagnosticRuntime:
                 self.previous_metrics = copy.deepcopy(prior_metrics)
                 self.previous_session = copy.deepcopy(prior_session)
                 self.previous_structure = copy.deepcopy(prior_structure)
+                self.previous_dag_paths = copy.deepcopy(prior_dag_paths)
                 self.previous_evaluation = copy.deepcopy(prior_evaluation)
             else:
                 self.previous_cfg2 = None
                 self.previous_metrics = None
                 self.previous_session = None
                 self.previous_structure = None
+                self.previous_dag_paths = None
                 self.previous_evaluation = None
 
             result = self._session_summary()
@@ -244,6 +288,10 @@ class DiagnosticRuntime:
             result["changed_cfg2"] = self._diff_cfg2(
                 self.previous_cfg2,
                 result.get("cfg2"),
+            )
+            result["changed_dags"] = self._diff_dag_paths(
+                self.previous_dag_paths,
+                self.dag_paths,
             )
             return result
 
@@ -288,6 +336,7 @@ class DiagnosticRuntime:
                 ),
                 "session": copy.deepcopy(self.previous_session),
                 "model_structure": copy.deepcopy(self.previous_structure),
+                "dag_paths": copy.deepcopy(self.previous_dag_paths),
             }
 
     def get_previous_evaluation(self) -> Dict[str, Any]:
@@ -355,6 +404,7 @@ class DiagnosticRuntime:
                     "evaluated_at": time.time(),
                     "elapsed_seconds": elapsed,
                     "cfg2": self._snapshot_tunable_config(self.cfg),
+                    "dag_paths": copy.deepcopy(self.dag_paths),
                     "error": {
                         "type": type(error).__name__,
                         "message": str(error),
@@ -370,6 +420,7 @@ class DiagnosticRuntime:
                     "evaluated_at": time.time(),
                     "elapsed_seconds": elapsed,
                     "cfg2": self._snapshot_tunable_config(self.cfg),
+                    "dag_paths": copy.deepcopy(self.dag_paths),
                     "error": {
                         "type": "DiagnosticRuntimeError",
                         "message": (
@@ -388,6 +439,7 @@ class DiagnosticRuntime:
                     "evaluated_at": time.time(),
                     "elapsed_seconds": elapsed,
                     "cfg2": self._snapshot_tunable_config(self.cfg),
+                    "dag_paths": copy.deepcopy(self.dag_paths),
                     "error": {
                         "type": "DiagnosticRuntimeError",
                         "message": "HDBSCAN evaluator returned a non-mapping result.",
@@ -402,6 +454,7 @@ class DiagnosticRuntime:
                 "evaluated_at": time.time(),
                 "elapsed_seconds": elapsed,
                 "cfg2": self._snapshot_tunable_config(self.cfg),
+                "dag_paths": copy.deepcopy(self.dag_paths),
             })
             self.current_evaluation = copy.deepcopy(enriched)
             return enriched
@@ -458,6 +511,9 @@ class DiagnosticRuntime:
                     "host_fixed_overrides": copy.deepcopy(self._config_overrides),
                     "source_code_modification_allowed": False,
                     "fixed_cfg_overrides_allowed": False,
+                    "dag_structure_modification_allowed": True,
+                    "candidate_structure_source": "candidate DAG YAML and runtime build",
+                    "baseline_structure_query_source": "source-graph MCP",
                     "evaluation_tool_available": True,
                     "evaluation_tool": "evaluate_hdbscan",
                 },
@@ -466,17 +522,7 @@ class DiagnosticRuntime:
                     "transactions": self._transaction_count,
                 },
                 "diagnostics": {
-                    "config_path": (
-                        str(self.diagnostic_config_path)
-                        if self.diagnostic_config_path is not None
-                        else None
-                    ),
-                    "config_path_source": "CFG.diagnostic_config_path",
                     "structure_id": self.structure.get("structure_id"),
-                    "structure_id_validation": False,
-                    "probe_policy": copy.deepcopy(
-                        self.structure.get("diagnostic_policy_report", {})
-                    ),
                     "enabled_modules": enabled_modules,
                     "enabled_stage_count": len(stage_configs),
                     "effective_stage_configs": copy.deepcopy(stage_configs),
@@ -492,6 +538,7 @@ class DiagnosticRuntime:
                     "previous_session_available": self.previous_session is not None,
                     "previous_metrics_available": self.previous_metrics is not None,
                     "previous_structure_available": self.previous_structure is not None,
+                    "previous_dag_paths_available": self.previous_dag_paths is not None,
                     "current_evaluation_available": self.current_evaluation is not None,
                     "previous_evaluation_available": self.previous_evaluation is not None,
                 },
@@ -573,35 +620,23 @@ class DiagnosticRuntime:
                                     is_training=True,
                                 )
 
-                                mask = raw["mask"]
-                                fwd_out = self.model.encode(x_full, mask)
-                                predicts = self.model.predict_nextstep(fwd_out)
-                                l_recon, loss_detail = train_driver.compute_nextstep_recon_loss(
-                                    predicts,
-                                    raw,
-                                    self.cfg,
+                                fwd_out = self.model(x_full)
+                                loss_out = self.model.prediction_loss(
+                                    encoder_output=fwd_out,
+                                    raw=raw,
                                 )
 
-                            loss = self.cfg.lambda_recon * l_recon
+                            loss = loss_out["loss"]
+                            l_recon = loss_out["recon_loss"]
                             loss_value = float(loss.item())
                             recon_value = float(l_recon.item())
-
-                            # Backward-compatible with the original (total, sw_ce_float)
-                            # return and the newer (total, loss_components_dict) contract.
-                            component_metrics: Dict[str, float] = {}
-                            if isinstance(loss_detail, Mapping):
-                                if "sw_ce" not in loss_detail:
-                                    raise DiagnosticRuntimeError(
-                                        "compute_nextstep_recon_loss returned a mapping "
-                                        "without required 'sw_ce'"
-                                    )
-                                sw_ce_value = float(loss_detail["sw_ce"])
-                                for name in ("v", "sw", "amt", "is_new"):
-                                    value = loss_detail.get(name)
-                                    if value is not None:
-                                        component_metrics[f"loss.{name}"] = float(value)
-                            else:
-                                sw_ce_value = float(loss_detail)
+                            sw_ce_value = float(loss_out["sw_ce"].item())
+                            component_metrics: Dict[str, float] = {
+                                "loss.v": float(loss_out["loss_v"].item()),
+                                "loss.sw": float(loss_out["loss_sw"].item()),
+                                "loss.amt": float(loss_out["loss_amt"].item()),
+                                "loss.is_new": float(loss_out["loss_is_new"].item()),
+                            }
 
                             training_metrics: Dict[str, Any] = {
                                 "loss.total": loss_value,
@@ -837,10 +872,24 @@ class DiagnosticRuntime:
                 )
 
             changed_cfg2 = self._diff_cfg2(self.previous_cfg2, current_cfg2)
+            changed_dags = self._diff_dag_paths(
+                self.previous_dag_paths,
+                self.dag_paths,
+            )
             if len(changed_cfg2) > 1:
                 warnings.append(
                     "More than one tunable changed; causal attribution to any single "
                     "parameter is weaker."
+                )
+            if changed_cfg2 and changed_dags:
+                warnings.append(
+                    "CFG2 parameters and DAG structure changed together; causal "
+                    "attribution to either intervention is weaker."
+                )
+            if len(changed_dags) > 1:
+                warnings.append(
+                    "More than one DAG changed; causal attribution to any single DAG "
+                    "edit is weaker."
                 )
             if common_steps == 0:
                 warnings.append("No matched completed training steps are available yet.")
@@ -852,6 +901,9 @@ class DiagnosticRuntime:
                 "previous_cfg2": copy.deepcopy(self.previous_cfg2),
                 "current_cfg2": current_cfg2,
                 "changed_cfg2": changed_cfg2,
+                "previous_dag_paths": copy.deepcopy(self.previous_dag_paths),
+                "current_dag_paths": copy.deepcopy(self.dag_paths),
+                "changed_dags": changed_dags,
                 "matched_metric_window": {
                     "common_completed_steps": common_steps,
                     "since_step": 0 if common_steps > 0 else None,
@@ -884,6 +936,7 @@ class DiagnosticRuntime:
             self.previous_metrics = None
             self.previous_session = None
             self.previous_structure = None
+            self.previous_dag_paths = None
             self.previous_evaluation = None
 
     # ------------------------------------------------------------------
@@ -898,28 +951,181 @@ class DiagnosticRuntime:
         cfg = CFG2()
         self._apply_config_overrides(cfg)
         if restart_overrides:
-            self._apply_restart_overrides(cfg, restart_overrides)
-        self._validate_runtime_config(cfg)
+            cfg_overrides = {
+                name: value
+                for name, value in restart_overrides.items()
+                if name in self._tunable_field_names()
+            }
+            self._apply_restart_overrides(cfg, cfg_overrides)
+        #self._validate_runtime_config(cfg)
         return cfg
 
-    def _build_session_candidate(self, cfg: CFG2) -> Dict[str, Any]:
-        """Construct a complete session without mutating the active runtime."""
-        config_path = Path(cfg.diagnostic_config_path).expanduser().resolve()
-        if not config_path.exists():
-            raise FileNotFoundError(f"Diagnostic config not found: {config_path}")
+    @classmethod
+    def _default_dag_path(cls, name: str) -> Path:
+        try:
+            filename, _ = cls._DAG_PATH_SPECS[name]
+        except KeyError as exc:
+            raise ValueError(f"Unknown DAG path field: {name}") from exc
+        return (Path(train_driver.__file__).resolve().parent / "config" / filename).resolve()
 
-        registry = DiagnosticRegistry()
+    @classmethod
+    def _build_effective_dag_paths(
+        cls,
+        *,
+        restart_overrides: Optional[Mapping[str, Any]],
+    ) -> Dict[str, Dict[str, str]]:
+        overrides = restart_overrides or {}
+        result: Dict[str, Dict[str, str]] = {}
+        for name, (_, expected_dag_id) in cls._DAG_PATH_SPECS.items():
+            raw_path = overrides.get(name, str(cls._default_dag_path(name)))
+            if not isinstance(raw_path, str) or not raw_path.strip():
+                raise TypeError(f"DAG path {name!r} must be a non-empty string")
+
+            path = Path(raw_path).expanduser().resolve()
+            if not path.exists():
+                raise FileNotFoundError(f"DAG path {name!r} does not exist: {path}")
+            if not path.is_file():
+                raise ValueError(f"DAG path {name!r} is not a file: {path}")
+            if path.suffix.lower() not in {".yaml", ".yml"}:
+                raise ValueError(f"DAG path {name!r} must be a YAML file: {path}")
+
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            result[name] = {
+                "path": str(path),
+                "dag_id": expected_dag_id,
+                "sha256": digest,
+            }
+        return result
+
+    @staticmethod
+    def _load_expected_dag(processor, path_info: Mapping[str, str]) -> Dict[str, Any]:
+        config = processor.load_config(path_info["path"])
+        expected_dag_id = path_info["dag_id"]
+        actual_dag_id = config.get("dag_id")
+        if actual_dag_id != expected_dag_id:
+            raise ValueError(
+                f"DAG {path_info['path']!r} has dag_id={actual_dag_id!r}; "
+                f"expected {expected_dag_id!r}"
+            )
+        return config
+
+    @classmethod
+    def _configure_feature_dag_runtime(
+        cls,
+        dag_paths: Mapping[str, Mapping[str, str]],
+    ) -> None:
+        """Load the selected feature DAGs into model_trainer's runtime cache."""
+        from model_diagnostic.dag.dag_processor import DagProcessor
+        from model_diagnostic.dag_ops.dag_feature_ops import FEATURE_DAG_REGISTRY
+
+        processor = DagProcessor(FEATURE_DAG_REGISTRY)
+        extractor_cfg = cls._load_expected_dag(
+            processor,
+            dag_paths["input_extractor_path"],
+        )
+        transformer_cfg = cls._load_expected_dag(
+            processor,
+            dag_paths["input_transformer_path"],
+        )
+        train_driver._FEATURE_DAG_RUNTIME = (
+            processor,
+            extractor_cfg,
+            transformer_cfg,
+        )
+
+    @classmethod
+    def _configure_hdbscan_dag_runtime(
+        cls,
+        dag_paths: Mapping[str, Mapping[str, str]],
+    ) -> None:
+        """Load the selected HDBSCAN DAGs into the evaluator runtime cache."""
+        from model_diagnostic.dag.dag_processor import DagProcessor
+        from model_diagnostic.dag.hdbscan_registry import HDBSCAN_DAG_REGISTRY
+        from model_diagnostic.dag_ops import dag_hdbscan_ops as _dag_hdbscan_ops
+        del _dag_hdbscan_ops
+
+        processor = DagProcessor(HDBSCAN_DAG_REGISTRY)
+        centroid_cfg = cls._load_expected_dag(
+            processor,
+            dag_paths["hdbscan_centroid_build_path"],
+        )
+        evaluation_cfg = cls._load_expected_dag(
+            processor,
+            dag_paths["hdbscan_evaluation_path"],
+        )
+        hdbscan_eval._HDBSCAN_DAG_RUNTIME = (
+            processor,
+            centroid_cfg,
+            evaluation_cfg,
+        )
+
+    @classmethod
+    def _build_model_from_dags(
+        cls,
+        cfg: CFG2,
+        dag_paths: Mapping[str, Mapping[str, str]],
+    ) -> torch.nn.Module:
+        """Build encoder and prediction/loss modules from selected candidate DAGs."""
+        from model_diagnostic.dag.dag_processor import DagProcessor
+        from model_diagnostic.dag.model_builder_registry import (
+            MODEL_BUILDER_REGISTRY,
+            symbolic_input,
+        )
+        from model_diagnostic.dag_ops import dag_model_ops as _dag_model_ops
+        from model_diagnostic.dag_ops import (
+            dag_prediction_loss_ops as _dag_prediction_loss_ops,
+        )
+        del _dag_model_ops, _dag_prediction_loss_ops
+
+        processor = DagProcessor(MODEL_BUILDER_REGISTRY)
+        model_cfg = cls._load_expected_dag(
+            processor,
+            dag_paths["model_structure_path"],
+        )
+        model = processor.run(
+            model_cfg,
+            inputs={"x_full": symbolic_input("x_full")},
+            runtime={"cfg": cfg},
+        )["model"]
+
+        prediction_loss_cfg = cls._load_expected_dag(
+            processor,
+            dag_paths["prediction_loss_path"],
+        )
+        prediction_loss = processor.run(
+            prediction_loss_cfg,
+            inputs={
+                "encoder_output": symbolic_input("encoder_output"),
+                "raw": symbolic_input("raw"),
+            },
+            runtime={"cfg": cfg},
+        )["model"]
+
+        model.prediction_loss = prediction_loss
+        model.model_structure_path = dag_paths["model_structure_path"]["path"]
+        model.prediction_loss_path = dag_paths["prediction_loss_path"]["path"]
+        return model.to(cfg.device)
+
+    def _build_session_candidate(
+        self,
+        cfg: CFG2,
+        dag_paths: Mapping[str, Mapping[str, str]],
+    ) -> Dict[str, Any]:
+        """Construct a complete session without mutating the active runtime."""
+        registry: Optional[DiagnosticRegistry] = None
         probe = None
         try:
             train_driver.set_seed(cfg.seed)
-            model = train_driver.init_model(cfg)
+            self._configure_feature_dag_runtime(dag_paths)
+            self._configure_hdbscan_dag_runtime(dag_paths)
+            model = self._build_model_from_dags(cfg, dag_paths)
 
             with redirect_stdout(sys.stderr):
-                probe = self._build_probe_for_model(
+                probe = train_driver.build_diagnostic_probe(
+                    cfg,
                     model,
-                    registry=registry,
-                    config_path=config_path,
                 )
+            registry = probe.registry
 
             train_driver.set_seed(cfg.seed)
             with redirect_stdout(sys.stderr):
@@ -942,10 +1148,14 @@ class DiagnosticRuntime:
                 raise DiagnosticRuntimeError(
                     "Diagnostic probe did not retain the loaded model structure"
                 )
+            structure["structure_id"] = (
+                "model_structure:"
+                + dag_paths["model_structure_path"]["sha256"][:16]
+            )
+            structure["dag_paths"] = copy.deepcopy(dag_paths)
 
             return {
                 "cfg": cfg,
-                "diagnostic_config_path": config_path,
                 "registry": registry,
                 "model": model,
                 "optimizer": optimizer,
@@ -953,6 +1163,7 @@ class DiagnosticRuntime:
                 "train_data": train_data,
                 "txn_index": txn_index,
                 "structure": structure,
+                "dag_paths": copy.deepcopy(dag_paths),
                 "training_record_count": self._infer_record_count(train_data),
                 "transaction_count": len(txn_index),
             }
@@ -962,12 +1173,12 @@ class DiagnosticRuntime:
                     probe.stop()
                 except Exception:
                     pass
-            registry.clear(reset_specs=True)
+            if registry is not None:
+                registry.clear(reset_specs=True)
             raise
 
     def _commit_session_candidate(self, candidate: Mapping[str, Any]) -> None:
         self.cfg = candidate["cfg"]
-        self.diagnostic_config_path = candidate["diagnostic_config_path"]
         self.registry = candidate["registry"]
         self.model = candidate["model"]
         self.optimizer = candidate["optimizer"]
@@ -975,6 +1186,7 @@ class DiagnosticRuntime:
         self.train_data = candidate["train_data"]
         self.txn_index = candidate["txn_index"]
         self.structure = candidate["structure"]
+        self.dag_paths = candidate["dag_paths"]
 
         self.session_id = uuid.uuid4().hex
         self.started_at = time.time()
@@ -986,102 +1198,6 @@ class DiagnosticRuntime:
         self._training_record_count = candidate["training_record_count"]
         self._transaction_count = candidate["transaction_count"]
         self.initialized = True
-
-    def _build_probe_for_model(
-        self,
-        model: torch.nn.Module,
-        *,
-        registry: DiagnosticRegistry,
-        config_path: Path,
-    ) -> DiagnosticProbeManager:
-        """Apply diagnostic JSON as policy to the freshly rendered model.
-
-        structure_id is informational only. Exact module paths inherit policy.
-        New indexed siblings such as fwd_stack.2 inherit a common sibling policy
-        when existing indexed sibling policies agree. Stale paths are reported but
-        do not block a structure experiment.
-        """
-        with config_path.open("r", encoding="utf-8") as f:
-            policy = json.load(f)
-        if not isinstance(policy, Mapping):
-            raise DiagnosticRuntimeError("Diagnostic config must contain a JSON object")
-        policy_modules = policy.get("modules")
-        if not isinstance(policy_modules, list):
-            raise DiagnosticRuntimeError("Diagnostic config must contain a 'modules' list")
-
-        exact_policy: Dict[str, Dict[str, Any]] = {}
-        indexed_policy: Dict[str, List[Dict[str, Any]]] = {}
-
-        for module in policy_modules:
-            if not isinstance(module, Mapping):
-                continue
-            path = module.get("module_path")
-            diagnostics = module.get("diagnostics")
-            if not isinstance(path, str) or not isinstance(diagnostics, Mapping):
-                continue
-            diag = copy.deepcopy(dict(diagnostics))
-            exact_policy[path] = diag
-
-            match = re.match(r"^(.*)\.(\d+)$", path)
-            if match:
-                indexed_policy.setdefault(match.group(1), []).append(diag)
-
-        structure = render_model_structure(model)
-        current_paths = {
-            module.get("module_path")
-            for module in structure.get("modules", [])
-            if isinstance(module, Mapping) and isinstance(module.get("module_path"), str)
-        }
-
-        exact_matches: List[str] = []
-        propagated_matches: List[str] = []
-        ambiguous_indexed_prefixes: set[str] = set()
-
-        for module in structure.get("modules", []):
-            if not isinstance(module, Mapping):
-                continue
-            path = module.get("module_path")
-            if not isinstance(path, str):
-                continue
-
-            if path in exact_policy:
-                module["diagnostics"] = copy.deepcopy(exact_policy[path])
-                exact_matches.append(path)
-                continue
-
-            match = re.match(r"^(.*)\.(\d+)$", path)
-            if not match:
-                continue
-            prefix = match.group(1)
-            templates = indexed_policy.get(prefix, [])
-            if not templates:
-                continue
-            first = templates[0]
-            if all(template == first for template in templates[1:]):
-                module["diagnostics"] = copy.deepcopy(first)
-                propagated_matches.append(path)
-            else:
-                ambiguous_indexed_prefixes.add(prefix)
-
-        stale_enabled_paths = sorted(
-            path
-            for path, diag in exact_policy.items()
-            if bool(diag.get("enabled", False)) and path not in current_paths
-        )
-
-        structure["diagnostic_policy_report"] = {
-            "source_path": str(config_path),
-            "structure_id_validation": False,
-            "exact_match_count": len(exact_matches),
-            "propagated_paths": sorted(propagated_matches),
-            "stale_enabled_paths": stale_enabled_paths,
-            "ambiguous_indexed_prefixes": sorted(ambiguous_indexed_prefixes),
-        }
-
-        probe = DiagnosticProbeManager(model, registry)
-        probe.load_structure_config(structure, validate_structure=False)
-        probe.start()
-        return probe
 
     def _terminate_current_session(self) -> None:
         if self.probe is not None:
@@ -1113,21 +1229,30 @@ class DiagnosticRuntime:
 
     @staticmethod
     def _validate_restart_overrides(overrides: Mapping[str, Any]) -> None:
+
         if not isinstance(overrides, Mapping):
             raise TypeError("overrides must be an object/map")
 
-        allowed = set(DiagnosticRuntime._tunable_field_names())
+        cfg_fields = set(DiagnosticRuntime._tunable_field_names())
+        dag_fields = set(DiagnosticRuntime._DAG_PATH_SPECS)
+        allowed = cfg_fields | dag_fields
         unknown = set(overrides) - allowed
         if unknown:
             raise ValueError(
                 "Unsupported restart_session override(s): "
                 + ", ".join(sorted(unknown))
-                + ". Allowed CFG2 fields: "
+                + ". Allowed CFG2/DAG path fields: "
                 + ", ".join(sorted(allowed))
             )
 
         defaults = CFG2()
         for name, value in overrides.items():
+            if name in dag_fields:
+                if not isinstance(value, str) or not value.strip():
+                    raise TypeError(
+                        f"DAG path override {name!r} must be a non-empty string"
+                    )
+                continue
             expected = getattr(defaults, name)
             if isinstance(expected, bool):
                 valid = isinstance(value, bool)
@@ -1184,6 +1309,31 @@ class DiagnosticRuntime:
             after = current.get(name)
             if before != after:
                 changed[name] = {"previous": before, "current": after}
+        return changed
+
+    @staticmethod
+    def _diff_dag_paths(
+        previous: Optional[Mapping[str, Mapping[str, str]]],
+        current: Optional[Mapping[str, Mapping[str, str]]],
+    ) -> Dict[str, Dict[str, Any]]:
+        if not isinstance(current, Mapping):
+            return {}
+        previous = previous if isinstance(previous, Mapping) else {}
+        changed: Dict[str, Dict[str, Any]] = {}
+        for name in sorted(set(previous) | set(current)):
+            before = previous.get(name)
+            after = current.get(name)
+            before_hash = before.get("sha256") if isinstance(before, Mapping) else None
+            after_hash = after.get("sha256") if isinstance(after, Mapping) else None
+            before_path = before.get("path") if isinstance(before, Mapping) else None
+            after_path = after.get("path") if isinstance(after, Mapping) else None
+            if before_hash != after_hash or before_path != after_path:
+                changed[name] = {
+                    "previous": copy.deepcopy(before),
+                    "current": copy.deepcopy(after),
+                    "content_changed": before_hash != after_hash,
+                    "path_changed": before_path != after_path,
+                }
         return changed
 
     @staticmethod
@@ -1524,6 +1674,7 @@ class DiagnosticRuntime:
                 if self.cfg is not None
                 else None
             ),
+            "dag_paths": copy.deepcopy(self.dag_paths),
         }
 
     def _require_initialized(self) -> None:
@@ -1561,8 +1712,6 @@ class DiagnosticRuntime:
             raise ValueError("cfg.num_trx must be a positive integer")
         if not isinstance(cfg.txn_batch_size, int) or isinstance(cfg.txn_batch_size, bool) or cfg.txn_batch_size <= 0:
             raise ValueError("cfg.txn_batch_size must be a positive integer")
-        if not isinstance(cfg.num_layers, int) or isinstance(cfg.num_layers, bool) or cfg.num_layers <= 0:
-            raise ValueError("cfg.num_layers must be a positive integer")
         if not isinstance(cfg.hidden_dim, int) or isinstance(cfg.hidden_dim, bool) or cfg.hidden_dim <= 0:
             raise ValueError("cfg.hidden_dim must be a positive integer")
         for name in ("lr", "clip_val", "tau_sw"):
@@ -1667,7 +1816,6 @@ class DiagnosticRuntime:
         self.session_step = 0
         self.model_step = 0
         self.segment_count = 0
-        self.diagnostic_config_path = None
         self.cfg = None
         self.model = None
         self.optimizer = None
@@ -1675,6 +1823,7 @@ class DiagnosticRuntime:
         self.train_data = None
         self.txn_index = None
         self.structure = None
+        self.dag_paths = None
         self._training_record_count = 0
         self._transaction_count = 0
         self._last_segment = None

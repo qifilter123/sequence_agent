@@ -36,8 +36,123 @@ class CFG:
 
     print_every: int = 200
 
+    # Tensor capacity only. Transaction generation is controlled independently
+    # by ``pattern_txn_count_ranges`` below.
+    model_sequence_capacity: int = 35
+    # Deprecated compatibility aliases for existing model code. V3 never uses
+    # these values to decide how many real-world transactions to generate.
     max_seq_len: int = 35
     min_seq_len: int = 5
+
+    # V3 rolling-window simulation: 30 days of warm-up followed by a 30-day
+    # period from which current training transactions may be selected.
+    simulation_warmup_days: int = 30
+    current_sampling_days: int = 30
+    anchor_window_seconds: float = 30 * DAY
+    warmup_txn_count_range = (2, 5)
+
+    # Inclusive number of transactions per BCA in one 30-day pattern period.
+    # These controls are intentionally independent of model tensor capacity.
+    pattern_txn_count_ranges = {
+        "normal": (2, 3),
+        "Shopper": (5, 15),
+        "Upgrader": (4, 8),
+        "Traveler": (3, 7),
+        "Shared_Household": (2, 5),
+        "Stuffing_low_and_slow": (2, 5),
+        "Stuffing_rotating_proxy": (1, 3),
+        "Stuffing_dumb_script": (3, 8),
+        "Stuffing_card_tester": (1, 3),
+        "ATO_classic": (4, 8),
+        "ATO_blitz": (4, 9),
+        "ATO_sneaky": (4, 7),
+        "Stuffing_then_ATO": (5, 8),
+    }
+
+    pattern_dt_ranges = {
+        "normal": (DAY, 7 * DAY),
+        "Shopper": (3600.0, DAY),
+        "Upgrader": (DAY, 3 * DAY),
+        "Traveler": (3600.0, 12 * 3600.0),
+        "Shared_Household": (300.0, 7200.0),
+        "Stuffing_low_and_slow": (2 * DAY, 7 * DAY),
+        "Stuffing_rotating_proxy": (1.0, 15.0),
+        "Stuffing_dumb_script": (1.0, 5.0),
+        "Stuffing_card_tester": (10.0, 60.0),
+        "ATO_classic": (30.0, 300.0),
+        "ATO_blitz": (5.0, 30.0),
+        "ATO_sneaky": (DAY, 3 * DAY),
+        "Stuffing_then_ATO": (10.0, 300.0),
+    }
+
+    campaign_victim_count_ranges = {
+        "Stuffing_low_and_slow": (3, 10),
+        "Stuffing_rotating_proxy": (5, 20),
+        "Stuffing_dumb_script": (2, 6),
+        "Stuffing_card_tester": (3, 12),
+        "ATO_classic": (2, 6),
+        "ATO_blitz": (2, 5),
+        "ATO_sneaky": (1, 4),
+        "Stuffing_then_ATO": (2, 6),
+    }
+    household_bca_count_range = (2, 4)
+    household_shared_probabilities = {
+        "fp": 0.70,
+        "ship": 0.90,
+        "bill": 0.60,
+        "em": 0.10,
+    }
+    household_ip_pool_size_range = (1, 3)
+    normal_ip_change_probability: float = 0.05
+    shopper_ip_change_probability: float = 0.15
+    household_ip_change_probability: float = 0.35
+    traveler_ip_count_range = (2, 4)
+    upgrader_subtype_probabilities = {
+        "device_upgrade": 0.50,
+        "shipping_change": 0.30,
+        "home_move": 0.20,
+    }
+    low_slow_ip_rotation_probability: float = 0.65
+    low_slow_fp_rotation_probability: float = 0.35
+
+    # Per-BCA spending profile. Pattern amount policies are relative to this
+    # stable account baseline rather than global fraud/non-fraud thresholds.
+    bca_amount_median: float = 100.0
+    bca_amount_log_sigma: float = 0.55
+    bca_amount_mean_range = (20.0, 500.0)
+    bca_amount_std_ratio_range = (0.20, 0.45)
+    benign_small_purchase_probability: float = 0.05
+    benign_small_purchase_range = (1.0, 8.0)
+    benign_high_ticket_probabilities = {
+        "normal": 0.03,
+        "Shopper": 0.08,
+        "Upgrader": 0.20,
+        "Traveler": 0.08,
+        "Shared_Household": 0.08,
+    }
+    benign_high_ticket_multiplier_range = (2.0, 6.0)
+
+    stuffing_normal_amount_probabilities = {
+        "Stuffing_low_and_slow": 0.70,
+        "Stuffing_rotating_proxy": 0.75,
+        "Stuffing_dumb_script": 0.40,
+    }
+    card_tester_victim_bill_probability: float = 0.85
+
+    ato_entity_change_probabilities = {
+        "ATO_classic": {"fp": 1.0, "ip": 1.0, "em": 0.30, "bill": 0.10, "ship": 0.70},
+        "ATO_blitz": {"fp": 1.0, "ip": 1.0, "em": 0.10, "bill": 0.05, "ship": 0.70},
+        "ATO_sneaky": {"fp": 0.30, "ip": 1.0, "em": 0.40, "bill": 0.10, "ship": 0.60},
+    }
+    ato_classic_near_normal_probability: float = 0.20
+    ato_classic_very_high_probability: float = 0.20
+    ato_classic_near_normal_multiplier_range = (0.8, 1.5)
+    ato_classic_elevated_multiplier_range = (2.0, 5.0)
+    ato_classic_very_high_multiplier_range = (5.0, 10.0)
+    ato_blitz_first_multiplier_range = (0.8, 2.0)
+    ato_blitz_later_multiplier_range = (3.0, 10.0)
+    ato_sneaky_takeover_multiplier_range = (0.7, 1.5)
+    ato_sneaky_final_multiplier_range = (2.5, 7.0)
 
     # Robust Scaling
     epsilon: float = 1e-6
@@ -52,11 +167,13 @@ class CFG:
     # === Scenario Probabilities ===
     p_ato: float = 0.05
     p_stuffing: float = 0.05
-    p_stuff_ato: float = 0.03
+    # Reserved pattern; disabled until its behavior is specified independently.
+    p_stuff_ato: float = 0.0
     p_traveler: float = 0.05
     p_shopper: float = 0.07
     p_upgrader: float = 0.07
-    #p_chotic_normal: float = 0.05
+    p_shared_household: float = 0.05
+    # Deprecated misspelled V1 name; V3 does not use it.
     p_chotic_normal: float = 0.0
 
     anomaly_patterns = [
@@ -68,12 +185,13 @@ class CFG:
         "ATO_blitz",
         "ATO_sneaky",
     ]
-    normal_patterns = ["normal", "Shopper", "Upgrader", "Traveler", "Chaotic_Normal"]
+    normal_patterns = ["normal", "Shopper", "Upgrader", "Traveler", "Shared_Household"]
 
     # Feature / model shape contract.
     # These values are tied to generated feature shapes or head cardinalities,
     # so they are not exposed as agent overrides.
     # input_dim: int = 21
+    # bca, em, fp, ship. IP and bill intentionally remain non-anchor features.
     num_anchor_types: int = 4
     input_base_dim: int = 16
     sw_classes: int = 32
@@ -111,7 +229,11 @@ class CFG:
     ato_amt_dv = 1.2
     ato_1time_amt_mean = 6.5
     ato_1time_amt_dv = 1.0
-    stuffing_amt_range = (0.0, 5.0)
+    # V3 never creates zero-dollar transactions.
+    stuffing_amount_range = (1.0, 5.0)
+    card_testing_amount_range = (1.0, 5.0)
+    stuffing_normal_amount_probability: float = 0.45  # deprecated fallback
+    stuffing_amt_range = (1.0, 5.0)  # deprecated V1/V2 alias
     bot_camouflage_prob = 0.4
 
     # 标签稀缺性模拟
@@ -162,7 +284,6 @@ class CFG2(CFG):
     diagnostic runtime and MCP server.
     """
 
-    steps: int = 3000
     steps: int = 3000
     txn_batch_size: int = 64
 

@@ -2,8 +2,8 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://example.invalid/source-tree/src-graph-dag-schema.json",
   "title": "Source Tree DAG graph",
-  "description": "A DAG graph combined with source-code symbols. CODE nodes use simple symbol names as labels. Source ownership and nesting, including class-to-attribute and class-to-method relationships, are represented by CODE contains CODE links.",
-  "$comment": "Cross-node validation must enforce these CODE relationships: CODE contains CODE; CFG_PARAM uses CODE; OPERATION references CODE.",
+  "description": "A DAG graph combined with source-code symbols and agent-generated semantic annotations. CODE nodes use simple symbol names as labels. Source ownership and nesting, including class-to-attribute and class-to-method relationships, are represented by CODE contains CODE links.",
+  "$comment": "Cross-node validation must enforce CODE relationships and semantic annotation relationships. Any non-semantic source node may have_intent an INTENT node or has_behavior a BEHAVIOR node.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -63,7 +63,9 @@
             "INPUT_FIELD",
             "OUTPUT_MAP",
             "OUTPUT_FIELD",
-            "CODE"
+            "CODE",
+            "INTENT",
+            "BEHAVIOR"
           ]
         },
         "label": {
@@ -73,6 +75,14 @@
         },
         "value": {
           "$ref": "#/$defs/jsonValue"
+        },
+        "basis": {
+          "type": "string",
+          "enum": [
+            "extracted",
+            "inferred"
+          ],
+          "description": "How an INTENT or BEHAVIOR statement was obtained. Allowed only on semantic annotation nodes."
         },
         "source_file": {
           "type": "string",
@@ -100,11 +110,85 @@
               "label",
               "value"
             ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "file_type": {
+                "enum": [
+                  "INTENT",
+                  "BEHAVIOR"
+                ]
+              }
+            },
+            "required": [
+              "file_type"
+            ]
           },
-          "else": {
+          "then": {
+            "required": [
+              "label",
+              "value",
+              "basis"
+            ],
+            "properties": {
+              "value": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "file_type": {
+                "not": {
+                  "enum": [
+                    "PARAM",
+                    "INTENT",
+                    "BEHAVIOR"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "file_type"
+            ]
+          },
+          "then": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "value"
+                  ]
+                },
+                {
+                  "required": [
+                    "basis"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "file_type": {
+                "const": "PARAM"
+              }
+            },
+            "required": [
+              "file_type"
+            ]
+          },
+          "then": {
             "not": {
               "required": [
-                "value"
+                "basis"
               ]
             }
           }
@@ -123,7 +207,9 @@
                   "INPUT_MAP",
                   "OUTPUT_MAP",
                   "OUTPUT_FIELD",
-                  "CODE"
+                  "CODE",
+                  "INTENT",
+                  "BEHAVIOR"
                 ]
               }
             },
@@ -158,11 +244,13 @@
         },
         "relation": {
           "type": "string",
-          "description": "Graph relationship. contains represents structural ownership and may connect CODE to CODE; uses connects a CFG_PARAM to its CODE definition; references connects an OPERATION to its CODE implementation.",
+          "description": "Graph relationship. contains represents structural ownership and may connect CODE to CODE; uses connects consumers to value providers; references connects an OPERATION to its CODE implementation; has_intent and has_behavior connect a non-semantic source node to an agent-generated semantic annotation.",
           "enum": [
             "contains",
             "uses",
-            "references"
+            "references",
+            "has_intent",
+            "has_behavior"
           ]
         }
       }
