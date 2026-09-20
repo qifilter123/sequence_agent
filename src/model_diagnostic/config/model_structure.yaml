@@ -2,7 +2,7 @@ version: 1
 dag_id: model_structure
 
 nodes:
-  # x_full -> t_emb
+
   - id: temporal_embedding
     op: build_temporal_embedding
     inputs:
@@ -10,10 +10,8 @@ nodes:
         - x_full
     params:
       source_index: 0
-    cfg_params:
-      out_dim: time_emb_dim
+      out_dim: 16 #time_emb_dim
 
-  # (x_full, t_emb) -> x_with_time
   - id: x_with_time
     op: build_concat
     inputs:
@@ -23,13 +21,12 @@ nodes:
     params:
       dim: -1
 
-  # Build-time dimension: input_base_dim + time_emb_dim.
   - id: feature_corr_input_dim
     op: add_numbers
-    inputs: {}
-    cfg_params:
-      left: input_base_dim
-      right: time_emb_dim
+    inputs: {} # place holder, no ipput needed
+    params:
+      left: 15 # input_base_dim
+      right: 16 # time_emb_dim
 
   - id: feature_corr_linear_1
     op: build_linear_transform
@@ -54,8 +51,8 @@ nodes:
     inputs:
       fields:
         - feature_corr_activation_1
-    cfg_params:
-      dropout_rate: dropout
+    params:
+      dropout_rate: 0.1 # dropout
 
   - id: feature_corr_linear_2
     op: build_linear_transform
@@ -64,8 +61,7 @@ nodes:
         - feature_corr_dropout
     params:
       input_dim: 32
-    cfg_params:
-      output_dim: combo_dim
+      output_dim: 16 # combo_dim
 
   - id: sw_combo
     op: build_activation
@@ -75,7 +71,6 @@ nodes:
     params:
       activation_name: relu
 
-  # (x_full, t_emb, sw_combo) -> forward sequence stack
   - id: fwd_input
     op: build_concat
     inputs:
@@ -86,12 +81,11 @@ nodes:
     params:
       dim: -1
 
-  # Build-time dimension: feature_corr_input_dim + combo_dim.
-  - id: fwd_input_dim
+  - id: gru_input_dim_0
     op: add_numbers
     inputs: {} #Place holder, no inputs neded
-    cfg_params:
-      right: combo_dim
+    params:
+      right: 16 # combo_dim
     derived_params:
       left: feature_corr_input_dim
 
@@ -103,28 +97,26 @@ nodes:
         - fwd_input
     params:
       batch_first: true
-    cfg_params:
-      hidden_dim: hidden_dim
+      hidden_dim: 64 # hidden_dim
     derived_params:
-      input_dim: fwd_input_dim
+      input_dim: gru_input_dim_0
 
   - id: fwd_norm_0
     op: build_layer_norm
     inputs:
       fields:
         - fwd_gru_0
-    cfg_params:
-      normalized_shape: hidden_dim
+    params:
+      normalized_shape: 64 # hidden_dim
 
   - id: fwd_dropout_0
     op: build_dropout
     inputs:
       fields:
         - fwd_norm_0
-    cfg_params:
-      dropout_rate: dropout
+    params:
+      dropout_rate: 0.1 # dropout
 
-  # Block 1: residual is explicit in the DAG.
   - id: fwd_gru_1
     op: build_gru
     inputs:
@@ -132,25 +124,24 @@ nodes:
         - fwd_dropout_0
     params:
       batch_first: true
-    cfg_params:
-      input_dim: hidden_dim
-      hidden_dim: hidden_dim
+      input_dim: 64 # hidden_dim
+      hidden_dim: 64 # hidden_dim
 
   - id: fwd_norm_1
     op: build_layer_norm
     inputs:
       fields:
         - fwd_gru_1
-    cfg_params:
-      normalized_shape: hidden_dim
+    params:
+      normalized_shape: 64 # hidden_dim
 
   - id: fwd_dropout_1
     op: build_dropout
     inputs:
       fields:
         - fwd_norm_1
-    cfg_params:
-      dropout_rate: dropout
+    params:
+      dropout_rate: 0.1 # dropout
 
   - id: fwd_residual_1
     op: build_residual

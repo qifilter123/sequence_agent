@@ -3,8 +3,13 @@ dag_id: input_transformer
 
 nodes:
 
-  # Omitted inputs means these operations receive the transform DAG's original
-  # external/raw inputs.
+  - id: dt_log
+    op: stable_log
+    inputs:
+      field: dt
+    params:
+      base: log1p
+
   - id: dt_to_pre
     op: dt_to_pre
 
@@ -116,7 +121,7 @@ nodes:
     op: stack_fields
     inputs:
       fields:
-        - dt
+        #- dt
         - dt_to_pre
         - dt_to_history
         - amt_norm

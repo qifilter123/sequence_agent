@@ -204,7 +204,7 @@ def train_internal(
 
     print(
         "Training Seq-on-Graph "
-        f"(fwd-only residual GRU, hidden={current_cfg.hidden_dim}, "
+        #f"(fwd-only residual GRU, hidden={current_cfg.hidden_dim}, "
         f"params={n_params:,}, "
         f"steps={current_cfg.steps}, "
         f"txn_batch={current_cfg.txn_batch_size})"
@@ -376,7 +376,7 @@ def load_trained_model(current_cfg):
     model.eval()
     print(
         "Loaded DAG-built Seq-on-Graph model "
-        f"(fwd-only residual GRU, hidden={current_cfg.hidden_dim})"
+        #f"(fwd-only residual GRU, hidden={current_cfg.hidden_dim})"
     )
     return model
 

@@ -20,8 +20,7 @@ nodes:
         - nextstep_hidden
     params:
       output_dim: 1
-    cfg_params:
-      input_dim: hidden_dim
+      input_dim: 64
 
   - id: v_pred
     op: build_squeeze
@@ -36,9 +35,9 @@ nodes:
     inputs:
       fields:
         - nextstep_hidden
-    cfg_params:
-      input_dim: hidden_dim
-      output_dim: sw_classes
+    params:
+      input_dim: 64 # hidden_dim
+      output_dim: 32 # sw_classes
 
   - id: amt_head
     op: build_linear_transform
@@ -47,8 +46,7 @@ nodes:
         - nextstep_hidden
     params:
       output_dim: 1
-    cfg_params:
-      input_dim: hidden_dim
+      input_dim: 64 # hidden_dim
 
   - id: amt_pred
     op: build_squeeze
@@ -63,9 +61,9 @@ nodes:
     inputs:
       fields:
         - nextstep_hidden
-    cfg_params:
-      input_dim: hidden_dim
-      output_dim: is_new_classes
+    params:
+      input_dim: 64 # hidden_dim
+      output_dim: 5 # is_new_classes
 
   - id: nextstep_mask
     op: build_next_step_pair_mask

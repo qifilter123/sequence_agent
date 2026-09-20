@@ -193,9 +193,14 @@ class CFG:
     # input_dim: int = 21
     # bca, em, fp, ship. IP and bill intentionally remain non-anchor features.
     num_anchor_types: int = 4
-    input_base_dim: int = 16
-    sw_classes: int = 32
-    is_new_classes: int = 5
+    #input_base_dim: int = 15
+    #sw_classes: int = 32
+    #is_new_classes: int = 5
+
+    #embedding_dim: int = 128
+    #time_emb_dim: int = 16
+    #combo_dim: int = 16
+    attn_pooling_step_len: int = 3
 
     # Feature Engineering Params
     taus: Tuple[float, ...] = (10.0, 600.0, 3600.0, DAY, WEEK)
@@ -267,12 +272,6 @@ class CFG:
     lambda_align: float = 1.0
     align_warmup_steps: int = 500
 
-    embedding_dim: int = 128
-    time_emb_dim: int = 16
-    combo_dim: int = 16
-    attn_pooling_step_len: int = 3
-
-
 @dataclass
 class CFG2(CFG):
     """Diagnostic-agent overridable experiment parameters only.
@@ -297,9 +296,9 @@ class CFG2(CFG):
 
     # Model architecture parameters that can be retrained from scratch
     # hidden_dim: int = 128
-    hidden_dim: int = 64
+    # hidden_dim: int = 64
     #num_layers: int = 2
-    dropout: float = 0.1
+    # dropout: float = 0.1
 
     @classmethod
     def get_tunable_parameters(cls) -> Dict[str, Any]:
